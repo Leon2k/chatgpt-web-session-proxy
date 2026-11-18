@@ -33,6 +33,19 @@ type Session = {
 
 type PersistedSession = Omit<Session, "page" | "queue">;
 
+export function validChatGptConversationUrl(url: string | undefined): string | undefined {
+  if (!url) return undefined;
+  try {
+    const parsed = new URL(url);
+    if (parsed.origin === "https://chatgpt.com" && /(?:^|\/)c\/[^/]+\/?$/.test(parsed.pathname)) {
+      return parsed.toString();
+    }
+  } catch {
+    // Ignore malformed persisted URL.
+  }
+  return undefined;
+}
+
 export class SessionManager {
   private sessions = new Map<string, Session>();
   private pendingSessions = new Map<string, Promise<Session>>();
@@ -120,14 +133,7 @@ export class SessionManager {
   }
 
   private validConversationUrl(url: string | undefined): string | undefined {
-    if (!url) return undefined;
-    try {
-      const parsed = new URL(url);
-      if (parsed.origin === "https://chatgpt.com" && parsed.pathname.startsWith("/c/")) return parsed.toString();
-    } catch {
-      // Ignore malformed persisted URL.
-    }
-    return undefined;
+    return validChatGptConversationUrl(url);
   }
 
   private async getOrCreate(id: string): Promise<Session> {
