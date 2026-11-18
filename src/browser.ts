@@ -13,6 +13,7 @@ const PROMPT_SELECTORS = [
   'textarea[placeholder*="Message"]',
 ];
 const ASSISTANT_SELECTORS = [
+  '[data-chatgpt-search-unit-key$=":assistant"] [data-response-body]',
   '[data-message-author-role="assistant"]',
   'article[data-testid^="conversation-turn-"] [data-message-author-role="assistant"]',
 ];
@@ -151,8 +152,12 @@ export class BrowserBackend {
 
   private async firstVisible(page: Page, selectors: string[]): Promise<Locator | null> {
     for (const selector of selectors) {
-      const locator = page.locator(selector).first();
-      if ((await locator.count()) && (await locator.isVisible().catch(() => false))) return locator;
+      const candidates = page.locator(selector);
+      const count = await candidates.count();
+      for (let i = 0; i < count; i++) {
+        const locator = candidates.nth(i);
+        if (await locator.isVisible().catch(() => false)) return locator;
+      }
     }
     return null;
   }
@@ -209,13 +214,25 @@ export class BrowserBackend {
     throw new Error(`${diagnostic}${chromeHint}`);
   }
 
-  private assistantLocator(page: Page): Locator {
-    return page.locator(ASSISTANT_SELECTORS.join(","));
+  private async assistantResponses(page: Page) {
+    return page.locator(ASSISTANT_SELECTORS.join(",")).evaluateAll(nodes =>
+      nodes.filter(node =>
+        node.hasAttribute("data-response-body") ||
+        !node.querySelector("[data-response-body]")
+      ).map((node, index) => ({
+        id: node.getAttribute("data-response-body") ||
+          node.getAttribute("data-message-id") ||
+          node.closest("[data-turn-key]")?.getAttribute("data-turn-key") ||
+          node.closest("article")?.getAttribute("data-testid") ||
+          `legacy-${index}`,
+        text: (node as HTMLElement).innerText.trim(),
+        state: node.closest("[data-talvt-turn-state]")?.getAttribute("data-talvt-turn-state") ?? null,
+      }))
+    );
   }
 
   async sendPrompt(page: Page, text: string): Promise<string> {
-    const assistants = this.assistantLocator(page);
-    const before = await assistants.count();
+    const before = new Set((await this.assistantResponses(page)).map(response => response.id));
     const prompt = await this.waitForPrompt(page);
     await prompt.click();
     await prompt.fill(text).catch(async () => {
@@ -228,23 +245,33 @@ export class BrowserBackend {
     if (send) await send.click();
     else await prompt.press("Enter");
 
-    const assistant = assistants.nth(before);
-    await assistant.waitFor({ state: "visible", timeout: config.turnTimeoutMs });
-
     const deadline = Date.now() + config.turnTimeoutMs;
     let last = "";
+    let lastId = "";
     let stableSince = Date.now();
+
     while (Date.now() < deadline) {
-      const current = (await assistant.innerText().catch(() => "")).trim();
-      if (current !== last) {
-        last = current;
-        stableSince = Date.now();
+      const responses = await this.assistantResponses(page);
+      const current = responses.at(-1);
+
+      if (current && !before.has(current.id)) {
+        if (current.id !== lastId || current.text !== last) {
+          lastId = current.id;
+          last = current.text;
+          stableSince = Date.now();
+        }
+
+        const running = Boolean(await this.firstVisible(page, STOP_SELECTORS));
+        const complete = current.state === null || current.state === "complete";
+
+        if (last && complete && !running && Date.now() - stableSince >= config.settleMs) {
+          return last;
+        }
       }
-      const running = Boolean(await this.firstVisible(page, STOP_SELECTORS));
-      if (last && !running && Date.now() - stableSince >= config.settleMs) return last;
+
       await page.waitForTimeout(250);
     }
-    if (last) return last;
-    throw new Error("Timed out waiting for ChatGPT to finish the response.");
+
+    throw new Error("Timed out waiting for a complete new ChatGPT response.");
   }
 }
