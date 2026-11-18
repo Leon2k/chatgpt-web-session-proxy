@@ -4,6 +4,7 @@ import { persistentContextOptions } from "./browser-launch.js";
 import { cdpLooksHeadless, cdpReachable, ensureRuntimeProfile, launchChromeForCdp, terminateChromeProcess, waitForCdp, waitForCdpToStop } from "./chrome-launch.js";
 import { startXvfb, stopXvfb, type XvfbHandle } from "./xvfb.js";
 import { hideNativeChrome } from "./native-visibility.js";
+import { responseMarkdown } from "./response-markdown.js";
 
 const PROMPT_SELECTORS = [
   "#prompt-textarea",
@@ -226,6 +227,7 @@ export class BrowserBackend {
           node.closest("article")?.getAttribute("data-testid") ||
           `legacy-${index}`,
         text: (node as HTMLElement).innerText.trim(),
+ html: node.innerHTML,
         state: node.closest("[data-talvt-turn-state]")?.getAttribute("data-talvt-turn-state") ?? null,
       }))
     );
@@ -265,7 +267,7 @@ export class BrowserBackend {
         const complete = current.state === null || current.state === "complete";
 
         if (last && complete && !running && Date.now() - stableSince >= config.settleMs) {
-          return last;
+          return responseMarkdown(last, current.html);
         }
       }
 

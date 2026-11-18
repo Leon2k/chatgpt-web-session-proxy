@@ -727,3 +727,20 @@ npm run build
 ```
 
 The repository contains unit tests for transcript prefix detection and tool-call parsing. Browser integration tests are intentionally not automated because they require a real logged-in ChatGPT account.
+
+## Reproducible systemd deployment
+
+For the systemd installation, treat the Git checkout as the only editable source tree and `/opt/chatgpt-web-session-proxy` as a generated release. Do not edit the `/opt` copy directly. Commit and verify changes in the checkout first, then deploy from that clean commit:
+
+```bash
+cd /srv/projects/chatgpt-web-session-proxy
+npm ci
+npm test
+npm run typecheck
+npm run build
+sudo ./scripts/deploy-systemd.sh
+```
+
+The deployment script refuses a dirty source tree, archives the existing `/opt` installation under `/var/backups/chatgpt-web-session-proxy`, builds and tests a fresh staged release, verifies that the compiled browser code contains the Markdown conversion, and only then switches the release and restarts `chatgpt-web-session-proxy.service`. It writes the exact source commit to `/opt/chatgpt-web-session-proxy/.deployed-git-commit`, keeps the previous installation next to `/opt` as a rollback copy, and automatically restores it if the service or local health endpoint does not recover.
+
+The script does not modify the systemd unit or the `chatproxy` home directory. Consequently the Chrome profile, cookies, ChatGPT authorization, saved proxy sessions, service environment, and network binding remain outside the release and survive updates.
