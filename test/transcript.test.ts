@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildDeltaPrompt, commonPrefixLength } from "../src/transcript.js";
+import { buildDeltaPrompt, changedInstructionMessages, commonPrefixLength } from "../src/transcript.js";
 import type { ChatMessage } from "../src/types.js";
 
 test("append-only transcript prefix", () => {
@@ -10,6 +10,22 @@ test("append-only transcript prefix", () => {
 
 test("divergence is detected", () => {
   assert.equal(commonPrefixLength([{ role: "user", content: "one" }], [{ role: "user", content: "two" }]), 0);
+});
+
+test("regenerated OpenCode system prompts do not diverge an append-only chat", () => {
+  const previous: ChatMessage[] = [
+    { role: "system", content: "harness with initial capabilities" },
+    { role: "user", content: "describe the attachment" },
+    { role: "assistant", content: "description" },
+  ];
+  const next: ChatMessage[] = [
+    { role: "system", content: "regenerated harness with updated capabilities" },
+    { role: "user", content: "describe the attachment" },
+    { role: "assistant", content: "description" },
+    { role: "user", content: "continue" },
+  ];
+  assert.equal(commonPrefixLength(previous, next), previous.length);
+  assert.deepEqual(changedInstructionMessages(previous, next, previous.length), [next[0]]);
 });
 
 test("image attachments participate in transcript identity", () => {

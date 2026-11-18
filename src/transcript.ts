@@ -15,10 +15,16 @@ export function contentToText(content: ChatMessage["content"]): string {
 }
 
 function normalizedMessage(message: ChatMessage): unknown {
+  // OpenCode regenerates its harness prompt between provider calls (for
+  // example when attachment or tool capabilities change). The already-open
+  // ChatGPT conversation has received the original harness, while tools are
+  // refreshed separately in every delta prompt, so system/developer wording
+  // must not make an otherwise append-only conversation look divergent.
+  const volatileInstruction = message.role === "system" || message.role === "developer";
   return {
     role: message.role,
-    content: contentToText(message.content),
-    images: imageReferenceHashes(message.content),
+    content: volatileInstruction ? null : contentToText(message.content),
+    images: volatileInstruction ? [] : imageReferenceHashes(message.content),
     name: message.name ?? null,
     tool_call_id: message.tool_call_id ?? null,
     tool_calls: message.tool_calls?.map((call) => ({ id: call.id, type: call.type, function: call.function })) ?? null,
@@ -34,6 +40,13 @@ export function commonPrefixLength(a: ChatMessage[], b: ChatMessage[]): number {
   let i = 0;
   for (; i < max; i++) if (fingerprintMessage(a[i]) !== fingerprintMessage(b[i])) break;
   return i;
+}
+
+export function changedInstructionMessages(previous: ChatMessage[], current: ChatMessage[], prefixLength: number): ChatMessage[] {
+  return current.slice(0, prefixLength).filter((message, index) =>
+    (message.role === "system" || message.role === "developer") &&
+    contentToText(message.content) !== contentToText(previous[index]?.content)
+  );
 }
 
 function renderMessage(message: ChatMessage): string {

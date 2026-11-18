@@ -244,6 +244,7 @@ Authentication stays inside the Chrome profile; the proxy does not ask for or pe
 - OpenAI-compatible non-streaming responses and incremental SSE output from the live ChatGPT DOM
 - `GET /v1/models`
 - automatic Pi session-affinity IDs, with optional `X-ChatGPT-Session` override
+- atomic session creation for concurrent OpenCode completion/metadata requests
 - one ChatGPT conversation per local session
 - persisted conversation URL + append-only shadow transcript
 - prompt-emulated tool calls translated to OpenAI `tool_calls`

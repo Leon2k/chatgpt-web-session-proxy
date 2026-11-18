@@ -8,7 +8,7 @@ import { parseAssistantTurn } from "./tool-protocol.js";
 import { buildProjectBootstrapTurn } from "./project-bootstrap.js";
 import { compactionTurn, hasConversationCheckpoint, isCompactionRequest, prepareCompactionMessages } from "./compaction.js";
 import { extractImageAttachments } from "./images.js";
-import { buildDeltaPrompt, buildInitialPrompt, commonPrefixLength } from "./transcript.js";
+import { buildDeltaPrompt, buildInitialPrompt, changedInstructionMessages, commonPrefixLength } from "./transcript.js";
 import type { AssistantTurn, BrowserResponseUpdateHandler, ChatMessage, ToolDefinition } from "./types.js";
 
 class SerialQueue {
@@ -35,6 +35,7 @@ type PersistedSession = Omit<Session, "page" | "queue">;
 
 export class SessionManager {
   private sessions = new Map<string, Session>();
+  private pendingSessions = new Map<string, Promise<Session>>();
   private cleanupTimer?: NodeJS.Timeout;
   constructor(private readonly browser: BrowserBackend) {}
 
@@ -50,8 +51,10 @@ export class SessionManager {
 
   async close(): Promise<void> {
     if (this.cleanupTimer) clearInterval(this.cleanupTimer);
+    await Promise.allSettled([...this.pendingSessions.values()]);
     await Promise.allSettled([...this.sessions.values()].map((s) => s.page.close()));
     this.sessions.clear();
+    this.pendingSessions.clear();
   }
 
   list() {
@@ -128,6 +131,29 @@ export class SessionManager {
   }
 
   private async getOrCreate(id: string): Promise<Session> {
+    const existing = this.sessions.get(id);
+    if (existing) {
+      existing.touchedAt = Date.now();
+      return existing;
+    }
+
+    // OpenCode may issue the main completion and an auxiliary metadata request
+    // for the same affinity ID almost simultaneously. Share one creation
+    // promise so both requests use the same SerialQueue and can never create
+    // competing pages or overwrite the same persisted shadow transcript.
+    const pending = this.pendingSessions.get(id);
+    if (pending) return pending;
+
+    const creation = this.createSession(id);
+    this.pendingSessions.set(id, creation);
+    try {
+      return await creation;
+    } finally {
+      if (this.pendingSessions.get(id) === creation) this.pendingSessions.delete(id);
+    }
+  }
+
+  private async createSession(id: string): Promise<Session> {
     const existing = this.sessions.get(id);
     if (existing) {
       existing.touchedAt = Date.now();
@@ -262,7 +288,8 @@ export class SessionManager {
         } else {
           const delta = messages.slice(prefix);
           if (!delta.length) throw new SessionDivergedError(`Session ${id} has no new messages; refusing to duplicate an old ChatGPT turn.`);
-          prompt = buildDeltaPrompt(delta, tools);
+          const updatedInstructions = changedInstructionMessages(session.shadow, messages, prefix);
+          prompt = buildDeltaPrompt([...updatedInstructions, ...delta], tools);
           forwardedMessages = delta;
         }
       }
