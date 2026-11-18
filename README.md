@@ -241,7 +241,7 @@ Authentication stays inside the Chrome profile; the proxy does not ask for or pe
 ## What is implemented
 
 - `POST /v1/chat/completions`
-- OpenAI-compatible non-streaming and SSE compatibility responses
+- OpenAI-compatible non-streaming responses and incremental SSE output from the live ChatGPT DOM
 - `GET /v1/models`
 - automatic Pi session-affinity IDs, with optional `X-ChatGPT-Session` override
 - one ChatGPT conversation per local session
@@ -255,7 +255,8 @@ Authentication stays inside the Chrome profile; the proxy does not ask for or pe
 ## Deliberate limitations
 
 - ChatGPT's web DOM is not a stable API; selectors can change.
-- Streaming is buffered compatibility streaming, not token-by-token upstream streaming.
+- Streaming polls the rendered ChatGPT DOM rather than an upstream token API. The proxy retains a short unstable tail so growing Markdown blocks are not emitted and then rewritten.
+- Tool-call responses remain buffered until protocol v3 is parsed, preventing partial `PI_TOOL_CALL` markers or arguments from leaking as assistant text.
 - Tool calls are prompt-emulated, not ChatGPT Web's internal tool system.
 - Images/files are not forwarded in this MVP.
 - Windows/macOS `hidden` mode hides native Chrome; it is not a separate virtual display server like Xvfb.
@@ -430,6 +431,8 @@ After each successful turn, session state is written to:
 ```
 
 The filename is SHA-256 of the session ID, so arbitrary header values are not used as paths. Session files are written mode `0600`, and the session directory is forced to mode `0700` when possible.
+
+OpenCode compaction requests intentionally rewrite and reduce the client transcript, so they cannot satisfy the normal append-only session check. The proxy recognizes OpenCode's structured-summary prompt, runs it in an isolated temporary ChatGPT conversation, and leaves the active coding conversation untouched. When OpenCode later sends a `<conversation-checkpoint>`, the proxy rotates the active browser conversation and seeds the replacement from that checkpoint. Ordinary transcript divergence remains an error.
 
 **Security note:** the shadow transcript can contain prompts, source code, command output, and other local project data that Pi sent through the model. Treat `~/.config/chatgpt-web-session-proxy/` as sensitive. The browser profile also contains your logged-in ChatGPT session.
 
