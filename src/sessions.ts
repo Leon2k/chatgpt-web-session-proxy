@@ -6,7 +6,7 @@ import { BrowserBackend } from "./browser.js";
 import { config } from "./config.js";
 import { parseAssistantTurn } from "./tool-protocol.js";
 import { buildProjectBootstrapTurn } from "./project-bootstrap.js";
-import { hasConversationCheckpoint, isCompactionRequest } from "./compaction.js";
+import { hasConversationCheckpoint, isCompactionRequest, prepareCompactionMessages } from "./compaction.js";
 import { buildDeltaPrompt, buildInitialPrompt, commonPrefixLength } from "./transcript.js";
 import type { AssistantTurn, BrowserResponseUpdateHandler, ChatMessage, ToolDefinition } from "./types.js";
 
@@ -174,7 +174,7 @@ export class SessionManager {
   ): Promise<AssistantTurn> {
     const page = await this.browser.newConversationPage();
     try {
-      const prompt = buildInitialPrompt(messages, []);
+      const prompt = buildInitialPrompt(prepareCompactionMessages(messages), []);
       return parseAssistantTurn(await this.browser.sendPrompt(page, prompt, onUpdate), []);
     } finally {
       await page.close().catch(() => undefined);
