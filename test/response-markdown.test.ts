@@ -30,6 +30,24 @@ assert.match(result, /\|\s*A\s*\|\s*B\s*\|/);
 assert.match(result, /\|\s*1\s*\|\s*2\s*\|/);
 });
 
+test("converts current ChatGPT code, table, and task widgets", () => {
+  const result = responseMarkdown("fallback", [
+    '<div data-chatgpt-copy-code="const value = `demo`;\n"><div data-code-block="true">',
+    '<div data-markdown-copy="exclude"><div>TypeScript</div><button>Copy</button></div>',
+    '<pre><code><span>const value = `demo`;</span></code></pre></div></div>',
+    '<table><tbody><tr><th><p>Feature</p></th><th><p>Status</p></th></tr>',
+    '<tr><td><p>Markdown</p></td><td><p>Supported</p></td></tr></tbody></table>',
+    '<ul data-d-marker="none"><li><button role="checkbox" aria-checked="true"></button><label>Done</label></li>',
+    '<li><button role="checkbox" aria-checked="false"></button><label>Todo</label></li></ul>',
+  ].join(""));
+
+  assert.ok(result.includes("```typescript\nconst value = `demo`;\n```"));
+  assert.match(result, /\|\s*Feature\s*\|\s*Status\s*\|/);
+  assert.match(result, /\|\s*Markdown\s*\|\s*Supported\s*\|/);
+  assert.match(result, /-\s+\[x\]\s+Done/i);
+  assert.match(result, /-\s+\[ \]\s+Todo/);
+});
+
 test("preserves raw tool protocol", () => {
   const raw = [
     "[[PI_" + "TOOL_CALL]]",
