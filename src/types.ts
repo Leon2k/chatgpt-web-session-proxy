@@ -36,3 +36,10 @@ export type AssistantTurn = {
   toolCalls: ToolCall[];
   finishReason: "stop" | "tool_calls";
 };
+
+export type BrowserResponseUpdate = {
+  text: string;
+  markdown: string;
+};
+
+export type BrowserResponseUpdateHandler = (update: BrowserResponseUpdate) => void | Promise<void>;

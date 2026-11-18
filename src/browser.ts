@@ -5,6 +5,7 @@ import { cdpLooksHeadless, cdpReachable, ensureRuntimeProfile, launchChromeForCd
 import { startXvfb, stopXvfb, type XvfbHandle } from "./xvfb.js";
 import { hideNativeChrome } from "./native-visibility.js";
 import { responseMarkdown } from "./response-markdown.js";
+import type { BrowserResponseUpdateHandler } from "./types.js";
 
 const PROMPT_SELECTORS = [
   "#prompt-textarea",
@@ -227,13 +228,13 @@ export class BrowserBackend {
           node.closest("article")?.getAttribute("data-testid") ||
           `legacy-${index}`,
         text: (node as HTMLElement).innerText.trim(),
- html: node.innerHTML,
+        html: node.innerHTML,
         state: node.closest("[data-talvt-turn-state]")?.getAttribute("data-talvt-turn-state") ?? null,
       }))
     );
   }
 
-  async sendPrompt(page: Page, text: string): Promise<string> {
+  async sendPrompt(page: Page, text: string, onUpdate?: BrowserResponseUpdateHandler): Promise<string> {
     const before = new Set((await this.assistantResponses(page)).map(response => response.id));
     const prompt = await this.waitForPrompt(page);
     await prompt.click();
@@ -250,6 +251,7 @@ export class BrowserBackend {
     const deadline = Date.now() + config.turnTimeoutMs;
     let last = "";
     let lastId = "";
+    let lastMarkdown = "";
     let stableSince = Date.now();
 
     while (Date.now() < deadline) {
@@ -263,11 +265,17 @@ export class BrowserBackend {
           stableSince = Date.now();
         }
 
+        const markdown = responseMarkdown(current.text, current.html);
+        if (markdown && markdown !== lastMarkdown) {
+          lastMarkdown = markdown;
+          await onUpdate?.({ text: current.text, markdown });
+        }
+
         const running = Boolean(await this.firstVisible(page, STOP_SELECTORS));
         const complete = current.state === null || current.state === "complete";
 
         if (last && complete && !running && Date.now() - stableSince >= config.settleMs) {
-          return responseMarkdown(last, current.html);
+          return markdown;
         }
       }
 

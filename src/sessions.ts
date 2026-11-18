@@ -7,7 +7,7 @@ import { config } from "./config.js";
 import { parseAssistantTurn } from "./tool-protocol.js";
 import { buildProjectBootstrapTurn } from "./project-bootstrap.js";
 import { buildDeltaPrompt, buildInitialPrompt, commonPrefixLength } from "./transcript.js";
-import type { AssistantTurn, ChatMessage, ToolDefinition } from "./types.js";
+import type { AssistantTurn, BrowserResponseUpdateHandler, ChatMessage, ToolDefinition } from "./types.js";
 
 class SerialQueue {
   private tail: Promise<unknown> = Promise.resolve();
@@ -167,7 +167,12 @@ export class SessionManager {
     return session;
   }
 
-  async complete(id: string, messages: ChatMessage[], tools: ToolDefinition[] = []): Promise<AssistantTurn> {
+  async complete(
+    id: string,
+    messages: ChatMessage[],
+    tools: ToolDefinition[] = [],
+    onUpdate?: BrowserResponseUpdateHandler,
+  ): Promise<AssistantTurn> {
     const session = await this.getOrCreate(id);
     return session.queue.run(async () => {
       session.touchedAt = Date.now();
@@ -218,7 +223,7 @@ export class SessionManager {
         prompt = buildDeltaPrompt(delta, tools);
       }
 
-      const turn = parseAssistantTurn(await this.browser.sendPrompt(session.page, prompt), tools);
+      const turn = parseAssistantTurn(await this.browser.sendPrompt(session.page, prompt, onUpdate), tools);
       session.bootstrapPending = false;
       session.shadow = [...messages, { role: "assistant", content: turn.content, ...(turn.toolCalls.length ? { tool_calls: turn.toolCalls } : {}) }];
       session.conversationUrl = this.validConversationUrl(session.page.url()) ?? session.conversationUrl;

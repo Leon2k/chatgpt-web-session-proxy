@@ -1,7 +1,7 @@
 import Fastify from "fastify";
 import { BrowserBackend } from "./browser.js";
 import { config } from "./config.js";
-import { jsonCompletion, streamCompletion } from "./openai.js";
+import { jsonCompletion, OpenAICompletionStream } from "./openai.js";
 import { SessionDivergedError, SessionManager, SessionRestoreError } from "./sessions.js";
 import type { ChatCompletionRequest } from "./types.js";
 import { resolveRequestSessionId } from "./session-id.js";
@@ -33,15 +33,19 @@ app.post<{ Body: ChatCompletionRequest }>("/v1/chat/completions", async (request
     return reply.code(400).send({ error: { message, type: "invalid_request_error" } });
   }
   const { sessionId, source: sessionSource } = resolvedSession;
+  const stream = body.stream
+    ? new OpenAICompletionStream(reply, body.model || MODEL_ID, Boolean(body.tools?.length))
+    : undefined;
 
   try {
     request.log.info({ sessionId, sessionSource, tools: (body.tools ?? []).map((tool) => tool.function?.name).filter(Boolean) }, "chat completion request");
-    const turn = await sessions.complete(sessionId, body.messages, body.tools ?? []);
+    const turn = await sessions.complete(sessionId, body.messages, body.tools ?? [], update => stream?.update(update));
     request.log.info({ sessionId, sessionSource, finishReason: turn.finishReason, toolCalls: turn.toolCalls.map((call) => call.function.name) }, "chat completion response");
-    if (body.stream) { streamCompletion(reply, body.model || MODEL_ID, turn); return; }
+    if (stream) { stream.finish(turn); return; }
     return reply.send(jsonCompletion(body.model || MODEL_ID, turn));
   } catch (error) {
     request.log.error(error);
+    if (stream?.hasStarted) { stream.fail(error); return; }
     if (error instanceof SessionDivergedError) return reply.code(409).send({ error: { message: error.message, type: "session_diverged" } });
     if (error instanceof SessionRestoreError) return reply.code(409).send({ error: { message: error.message, type: "session_restore_failed" } });
     return reply.code(502).send({ error: { message: error instanceof Error ? error.message : "ChatGPT web backend failed", type: "upstream_error" } });
