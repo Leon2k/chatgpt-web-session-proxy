@@ -31,6 +31,23 @@ const STOP_SELECTORS = [
   'button[aria-label^="Stop"]',
 ];
 
+export type AssistantResponseSnapshot = {
+  id: string;
+  text: string;
+  html: string;
+  state: string | null;
+};
+
+export function selectNewAssistantResponse(
+  responses: AssistantResponseSnapshot[],
+  before: ReadonlySet<string>,
+): AssistantResponseSnapshot | undefined {
+  // ChatGPT can append an empty completed placeholder after the real answer,
+  // sometimes reusing an older response ID. Select the newest non-empty node
+  // created by this turn instead of assuming the final DOM node is the answer.
+  return responses.findLast(response => !before.has(response.id) && response.text.trim().length > 0);
+}
+
 export class BrowserBackend {
   private browser?: Browser;
   private context?: BrowserContext;
@@ -277,9 +294,9 @@ export class BrowserBackend {
 
     while (Date.now() < deadline) {
       const responses = await this.assistantResponses(page);
-      const current = responses.at(-1);
+      const current = selectNewAssistantResponse(responses, before);
 
-      if (current && !before.has(current.id)) {
+      if (current) {
         if (current.id !== lastId || current.text !== last) {
           lastId = current.id;
           last = current.text;
