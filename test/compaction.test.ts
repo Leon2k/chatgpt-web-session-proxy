@@ -68,10 +68,16 @@ test("truncates tool-call arguments without changing their protocol fields", () 
 
 test("treats quoted tool markers in a compaction checkpoint as summary text", () => {
   const checkpoint = "<conversation-checkpoint><summary>Protocol used [[PI_TOOL_CALL]] markers.</summary></conversation-checkpoint>";
+  const normalized = `## Important Context\n${checkpoint}`;
   assert.deepEqual(compactionTurn(checkpoint), {
-    rawText: checkpoint,
-    content: checkpoint,
+    rawText: normalized,
+    content: normalized,
     toolCalls: [],
     finishReason: "stop",
   });
+});
+
+test("preserves compaction summaries that already use an OpenCode heading", () => {
+  const summary = "## Objective\n- Keep the proxy working.\n\n## Next Move\n1. Continue testing.";
+  assert.equal(compactionTurn(summary).content, summary);
 });

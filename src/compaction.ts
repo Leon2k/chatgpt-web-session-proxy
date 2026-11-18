@@ -17,6 +17,7 @@ const COMPACTION_MESSAGE_LIMIT = 6_000;
 const COMPACTION_TOOL_ARGUMENT_LIMIT = 3_000;
 const COMPACTION_TOOL_CALL_LIMIT = 8;
 const OMITTED_HISTORY_NOTE = "[Older transcript entries were omitted by the proxy to fit the ChatGPT Web composer. Preserve unresolved work from the retained recent history.]";
+const COMPACTION_HEADING = /^## (Objective|Requirements|Decisions|Work State|Next Move|Relevant Files|Important Context)\s*$/m;
 
 function truncateMiddle(value: string, limit: number): string {
   if (value.length <= limit) return value;
@@ -80,7 +81,13 @@ export function prepareCompactionMessages(
 }
 
 export function compactionTurn(content: string): AssistantTurn {
-  return { rawText: content, content, toolCalls: [], finishReason: "stop" };
+  // OpenCode 2.x accepts a checkpoint only when at least one line exactly
+  // matches a heading from its summary template. ChatGPT Web occasionally
+  // returns an otherwise useful summary inside old XML wrappers or as prose.
+  const normalized = COMPACTION_HEADING.test(content)
+    ? content
+    : `## Important Context\n${content}`;
+  return { rawText: normalized, content: normalized, toolCalls: [], finishReason: "stop" };
 }
 
 export function isCompactionRequest(messages: ChatMessage[]): boolean {
