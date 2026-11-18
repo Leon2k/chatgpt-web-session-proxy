@@ -4,6 +4,16 @@ import { IncrementalMarkdown } from "./streaming-text.js";
 import type { AssistantTurn, BrowserResponseUpdate } from "./types.js";
 
 const completionId = () => `chatcmpl-${crypto.randomUUID().replaceAll("-", "")}`;
+export const STREAM_CONTENT_CHUNK_CHARS = 16 * 1024;
+
+export function splitStreamContent(content: string, chunkChars = STREAM_CONTENT_CHUNK_CHARS): string[] {
+  if (!content) return [];
+  const chunks: string[] = [];
+  for (let offset = 0; offset < content.length; offset += chunkChars) {
+    chunks.push(content.slice(offset, offset + chunkChars));
+  }
+  return chunks;
+}
 
 export function jsonCompletion(model: string, turn: AssistantTurn) {
   return {
@@ -51,11 +61,17 @@ export class OpenAICompletionStream {
     })}\n\n`);
   }
 
+  private sendContent(content: string): void {
+    for (const chunk of splitStreamContent(content)) {
+      this.send({ choices: [{ index: 0, delta: { content: chunk }, finish_reason: null }] });
+    }
+  }
+
   update(update: BrowserResponseUpdate): void {
     const content = this.incremental.update(update.text, update.markdown);
     if (!content) return;
     this.begin();
-    this.send({ choices: [{ index: 0, delta: { content }, finish_reason: null }] });
+    this.sendContent(content);
   }
 
   finish(turn: AssistantTurn): void {
@@ -70,7 +86,7 @@ export class OpenAICompletionStream {
       }));
     } else {
       const content = this.incremental.finish(turn.content ?? "");
-      if (content) this.send({ choices: [{ index: 0, delta: { content }, finish_reason: null }] });
+      if (content) this.sendContent(content);
     }
     this.send({ choices: [{ index: 0, delta: {}, finish_reason: turn.finishReason }] });
     this.reply.raw.write("data: [DONE]\n\n");

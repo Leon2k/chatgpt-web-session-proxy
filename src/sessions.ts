@@ -13,10 +13,17 @@ import type { AssistantTurn, BrowserResponseUpdateHandler, ChatMessage, ToolDefi
 
 class SerialQueue {
   private tail: Promise<unknown> = Promise.resolve();
+  private pending = 0;
+
+  get busy(): boolean {
+    return this.pending > 0;
+  }
+
   run<T>(fn: () => Promise<T>): Promise<T> {
+    this.pending += 1;
     const next = this.tail.then(fn, fn);
     this.tail = next.catch(() => undefined);
-    return next;
+    return next.finally(() => { this.pending -= 1; });
   }
 }
 
@@ -217,6 +224,21 @@ export class SessionManager {
     }
   }
 
+  private async completeIsolated(
+    messages: ChatMessage[],
+    tools: ToolDefinition[],
+    onUpdate?: BrowserResponseUpdateHandler,
+  ): Promise<AssistantTurn> {
+    const page = await this.browser.newConversationPage();
+    try {
+      const images = extractImageAttachments(messages);
+      const content = await this.browser.sendPrompt(page, buildInitialPrompt(messages, tools), onUpdate, images);
+      return parseAssistantTurn(content, tools);
+    } finally {
+      await page.close().catch(() => undefined);
+    }
+  }
+
   async complete(
     id: string,
     messages: ChatMessage[],
@@ -224,6 +246,7 @@ export class SessionManager {
     onUpdate?: BrowserResponseUpdateHandler,
   ): Promise<AssistantTurn> {
     const session = await this.getOrCreate(id);
+    const queuedBehindAnother = session.queue.busy;
     return session.queue.run(async () => {
       session.touchedAt = Date.now();
 
@@ -232,6 +255,16 @@ export class SessionManager {
       // ChatGPT conversation so it cannot diverge or mutate the live session.
       if (isCompactionRequest(messages)) {
         return this.completeCompaction(messages);
+      }
+
+      // OpenCode launches auxiliary no-tool requests (for example chat-title
+      // generation) with the same affinity ID as the main completion. If one
+      // waited behind the main request and has a different transcript, handle
+      // it in its own disposable web conversation instead of returning 409 or
+      // allowing it to mutate the main session.
+      if (queuedBehindAnother && tools.length === 0 && session.shadow.length &&
+          commonPrefixLength(session.shadow, messages) !== session.shadow.length) {
+        return this.completeIsolated(messages, tools, onUpdate);
       }
 
       // On the first turn of a brand-new session, deterministically ask Pi to

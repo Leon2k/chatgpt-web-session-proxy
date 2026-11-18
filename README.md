@@ -241,7 +241,7 @@ Authentication stays inside the Chrome profile; the proxy does not ask for or pe
 ## What is implemented
 
 - `POST /v1/chat/completions`
-- OpenAI-compatible non-streaming responses and incremental SSE output from the live ChatGPT DOM
+- OpenAI-compatible non-streaming responses and incremental SSE output from the live ChatGPT DOM, with large image data split across bounded events
 - `GET /v1/models`
 - automatic Pi session-affinity IDs, with optional `X-ChatGPT-Session` override
 - atomic session creation for concurrent OpenCode completion/metadata requests
