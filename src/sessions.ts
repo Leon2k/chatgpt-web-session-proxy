@@ -6,6 +6,7 @@ import { BrowserBackend } from "./browser.js";
 import { config } from "./config.js";
 import { parseAssistantTurn } from "./tool-protocol.js";
 import { buildProjectBootstrapTurn } from "./project-bootstrap.js";
+import { hasConversationCheckpoint, isCompactionRequest } from "./compaction.js";
 import { buildDeltaPrompt, buildInitialPrompt, commonPrefixLength } from "./transcript.js";
 import type { AssistantTurn, BrowserResponseUpdateHandler, ChatMessage, ToolDefinition } from "./types.js";
 
@@ -167,6 +168,19 @@ export class SessionManager {
     return session;
   }
 
+  private async completeCompaction(
+    messages: ChatMessage[],
+    onUpdate?: BrowserResponseUpdateHandler,
+  ): Promise<AssistantTurn> {
+    const page = await this.browser.newConversationPage();
+    try {
+      const prompt = buildInitialPrompt(messages, []);
+      return parseAssistantTurn(await this.browser.sendPrompt(page, prompt, onUpdate), []);
+    } finally {
+      await page.close().catch(() => undefined);
+    }
+  }
+
   async complete(
     id: string,
     messages: ChatMessage[],
@@ -176,6 +190,13 @@ export class SessionManager {
     const session = await this.getOrCreate(id);
     return session.queue.run(async () => {
       session.touchedAt = Date.now();
+
+      // OpenCode compaction intentionally rewrites/reduces the transcript and
+      // asks the provider for a summary. Run that one request in an isolated
+      // ChatGPT conversation so it cannot diverge or mutate the live session.
+      if (isCompactionRequest(messages)) {
+        return this.completeCompaction(messages, onUpdate);
+      }
 
       // On the first turn of a brand-new session, deterministically ask Pi to
       // collect a small, read-only project snapshot before ChatGPT sees the
@@ -216,11 +237,25 @@ export class SessionManager {
       } else {
         const prefix = commonPrefixLength(session.shadow, messages);
         if (prefix !== session.shadow.length) {
-          throw new SessionDivergedError(`Session ${id} diverged at message ${prefix}. Reset it or start a new Pi session (or use a new explicit X-ChatGPT-Session value).`);
+          if (!hasConversationCheckpoint(messages)) {
+            throw new SessionDivergedError(`Session ${id} diverged at message ${prefix}. Reset it or start a new Pi session (or use a new explicit X-ChatGPT-Session value).`);
+          }
+
+          // A successful OpenCode compaction replaces the old transcript with
+          // a checkpoint. Rotate the web conversation and seed the new one
+          // from that checkpoint rather than weakening normal divergence checks.
+          const oldPage = session.page;
+          session.page = await this.browser.newConversationPage();
+          await oldPage.close().catch(() => undefined);
+          session.shadow = [];
+          session.conversationUrl = undefined;
+          session.bootstrapPending = false;
+          prompt = buildInitialPrompt(messages, tools);
+        } else {
+          const delta = messages.slice(prefix);
+          if (!delta.length) throw new SessionDivergedError(`Session ${id} has no new messages; refusing to duplicate an old ChatGPT turn.`);
+          prompt = buildDeltaPrompt(delta, tools);
         }
-        const delta = messages.slice(prefix);
-        if (!delta.length) throw new SessionDivergedError(`Session ${id} has no new messages; refusing to duplicate an old ChatGPT turn.`);
-        prompt = buildDeltaPrompt(delta, tools);
       }
 
       const turn = parseAssistantTurn(await this.browser.sendPrompt(session.page, prompt, onUpdate), tools);
