@@ -260,7 +260,7 @@ Authentication stays inside the Chrome profile; the proxy does not ask for or pe
 - Streaming polls the rendered ChatGPT DOM rather than an upstream token API. The proxy retains a short unstable tail so growing Markdown blocks are not emitted and then rewritten.
 - Tool-call responses remain buffered until protocol v3 is parsed, preventing partial `PI_TOOL_CALL` markers or arguments from leaking as assistant text.
 - Tool calls are prompt-emulated, not ChatGPT Web's internal tool system.
-- Image input accepts base64 `data:image/...` URLs only, up to 8 MiB each and 10 images per turn. External URLs and non-image files are not fetched or forwarded.
+- Image input accepts base64 PNG, JPEG, WebP, GIF, and AVIF data URLs only, up to 8 MiB each and 10 images per turn. External URLs, SVG, and non-image files are not fetched or forwarded.
 - Browser-local `blob:` response images cannot be opened by OpenCode and are omitted; normal signed HTTPS ChatGPT image URLs are retained.
 - Windows/macOS `hidden` mode hides native Chrome; it is not a separate virtual display server like Xvfb.
 - A site security challenge still needs manual completion through `npm run login`.

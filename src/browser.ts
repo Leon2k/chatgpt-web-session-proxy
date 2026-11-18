@@ -268,11 +268,35 @@ export class BrowserBackend {
       if (await candidate.count()) { input = candidate; break; }
     }
     if (!input) throw new Error("ChatGPT image attachment input was not found. The web UI may have changed.");
-    await input.setInputFiles(images.map(image => ({
-      name: image.name,
-      mimeType: image.mimeType,
-      buffer: image.buffer,
-    })));
+    let processed = 0;
+    let settleUpload!: () => void;
+    let failUpload!: (error: Error) => void;
+    const uploadsComplete = new Promise<void>((resolve, reject) => {
+      settleUpload = resolve;
+      failUpload = reject;
+    });
+    const timeout = setTimeout(() => failUpload(new Error("Timed out waiting for ChatGPT to process image attachments.")), 60_000);
+    const onResponse = (response: import("playwright").Response) => {
+      if (!response.url().includes("/backend-api/files/process_upload_stream")) return;
+      if (!response.ok()) {
+        failUpload(new Error(`ChatGPT rejected an image attachment with HTTP ${response.status()}.`));
+        return;
+      }
+      processed += 1;
+      if (processed >= images.length) settleUpload();
+    };
+    page.on("response", onResponse);
+    try {
+      await input.setInputFiles(images.map(image => ({
+        name: image.name,
+        mimeType: image.mimeType,
+        buffer: image.buffer,
+      })));
+      await uploadsComplete;
+    } finally {
+      clearTimeout(timeout);
+      page.off("response", onResponse);
+    }
     await page.waitForFunction((names: string[]) => names.every(name =>
       [...document.querySelectorAll("button[aria-label]")]
         .some(button => button.getAttribute("aria-label") === `Remove ${name}`)

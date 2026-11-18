@@ -25,3 +25,9 @@ test("does not fetch external image URLs", () => {
     { type: "image_url", image_url: { url: "http://127.0.0.1/private.png" } },
   ] }]), InvalidImageAttachmentError);
 });
+
+test("rejects image formats ChatGPT Web cannot submit", () => {
+  assert.throws(() => extractImageAttachments([{ role: "user", content: [
+    { type: "image_url", image_url: { url: "data:image/svg+xml;base64,PHN2Zy8+" } },
+  ] }]), /Unsupported image MIME type/);
+});

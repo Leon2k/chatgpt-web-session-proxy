@@ -11,6 +11,7 @@ const EXTENSIONS: Record<string, string> = {
   "image/png": "png",
   "image/webp": "webp",
 };
+const SUPPORTED_IMAGE_MIMES = new Set(Object.keys(EXTENSIONS));
 
 export class InvalidImageAttachmentError extends Error {
   override name = "InvalidImageAttachmentError";
@@ -42,6 +43,9 @@ function decodeImage(part: ImageUrlContentPart, index: number): ImageAttachment 
     );
   }
   const mimeType = match[1].toLowerCase();
+  if (!SUPPORTED_IMAGE_MIMES.has(mimeType)) {
+    throw new InvalidImageAttachmentError(`Unsupported image MIME type: ${mimeType}. Use PNG, JPEG, WebP, GIF, or AVIF.`);
+  }
   const encoded = match[2].replace(/\s+/g, "");
   const buffer = Buffer.from(encoded, "base64");
   if (!buffer.length) throw new InvalidImageAttachmentError("Image attachment is empty.");
@@ -49,7 +53,7 @@ function decodeImage(part: ImageUrlContentPart, index: number): ImageAttachment 
     throw new InvalidImageAttachmentError(`Image attachment exceeds the ${MAX_IMAGE_BYTES} byte limit.`);
   }
   const digest = crypto.createHash("sha256").update(buffer).digest("hex").slice(0, 12);
-  const extension = EXTENSIONS[mimeType] ?? (mimeType.slice("image/".length).replace(/[^a-z0-9]/g, "") || "img");
+  const extension = EXTENSIONS[mimeType];
   return { name: `image-${index + 1}-${digest}.${extension}`, mimeType, buffer };
 }
 
