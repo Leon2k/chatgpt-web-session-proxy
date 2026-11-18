@@ -217,6 +217,27 @@ export class BrowserBackend {
     throw new Error(`${diagnostic}${chromeHint}`);
   }
 
+  private async enterPrompt(page: Page, text: string): Promise<Locator> {
+    let prompt = await this.waitForPrompt(page);
+    await prompt.click();
+
+    // ChatGPT can replace the ProseMirror/Lexical node as soon as it receives
+    // focus. Re-resolve it before writing so a large compaction prompt is not
+    // sent to a detached locator until Playwright's timeout expires.
+    prompt = await this.waitForPrompt(page, 5_000);
+    try {
+      await prompt.fill(text, { timeout: 15_000 });
+      return prompt;
+    } catch {
+      prompt = await this.waitForPrompt(page, 5_000);
+      await prompt.click();
+      await page.keyboard.press("ControlOrMeta+A");
+      await page.keyboard.press("Backspace");
+      await page.keyboard.insertText(text);
+      return this.waitForPrompt(page, 5_000);
+    }
+  }
+
   private async assistantResponses(page: Page) {
     return page.locator(ASSISTANT_SELECTORS.join(",")).evaluateAll(nodes =>
       nodes.filter(node =>
@@ -239,17 +260,14 @@ export class BrowserBackend {
 
   async sendPrompt(page: Page, text: string, onUpdate?: BrowserResponseUpdateHandler): Promise<string> {
     const before = new Set((await this.assistantResponses(page)).map(response => response.id));
-    const prompt = await this.waitForPrompt(page);
-    await prompt.click();
-    await prompt.fill(text).catch(async () => {
-      await prompt.press("ControlOrMeta+A");
-      await prompt.press("Backspace");
-      await prompt.pressSequentially(text, { delay: 0 });
-    });
+    const prompt = await this.enterPrompt(page, text);
 
     const send = await this.firstVisible(page, SEND_SELECTORS);
     if (send) await send.click();
-    else await prompt.press("Enter");
+    else {
+      await prompt.click();
+      await page.keyboard.press("Enter");
+    }
 
     const deadline = Date.now() + config.turnTimeoutMs;
     let last = "";
