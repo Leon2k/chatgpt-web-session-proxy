@@ -15,6 +15,7 @@ const PROMPT_SELECTORS = [
   'textarea[placeholder*="Message"]',
 ];
 const ASSISTANT_SELECTORS = [
+  '[data-chatgpt-search-unit-key$=":assistant"] [data-dil-response]',
   '[data-chatgpt-search-unit-key$=":assistant"] [data-response-body]',
   '[data-message-author-role="assistant"]',
   'article[data-testid^="conversation-turn-"] [data-message-author-role="assistant"]',
@@ -219,11 +220,13 @@ export class BrowserBackend {
   private async assistantResponses(page: Page) {
     return page.locator(ASSISTANT_SELECTORS.join(",")).evaluateAll(nodes =>
       nodes.filter(node =>
-        node.hasAttribute("data-response-body") ||
-        !node.querySelector("[data-response-body]")
+        node.hasAttribute("data-dil-response") ||
+        (node.hasAttribute("data-response-body") && !node.querySelector("[data-dil-response]")) ||
+        !node.querySelector("[data-response-body], [data-dil-response]")
       ).map((node, index) => ({
         id: node.getAttribute("data-response-body") ||
           node.getAttribute("data-message-id") ||
+          node.closest("[data-chatgpt-search-unit-key]")?.getAttribute("data-chatgpt-search-unit-key") ||
           node.closest("[data-turn-key]")?.getAttribute("data-turn-key") ||
           node.closest("article")?.getAttribute("data-testid") ||
           `legacy-${index}`,
