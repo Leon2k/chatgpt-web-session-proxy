@@ -1,5 +1,5 @@
 import { contentToText } from "./transcript.js";
-import type { ChatMessage } from "./types.js";
+import type { AssistantTurn, ChatMessage } from "./types.js";
 
 const COMPACTION_PROMPT_MARKERS = [
   "You MUST summarize the conversation above into a structured summary",
@@ -77,6 +77,10 @@ export function prepareCompactionMessages(
     selected.unshift(note);
   }
   return selected;
+}
+
+export function compactionTurn(content: string): AssistantTurn {
+  return { rawText: content, content, toolCalls: [], finishReason: "stop" };
 }
 
 export function isCompactionRequest(messages: ChatMessage[]): boolean {

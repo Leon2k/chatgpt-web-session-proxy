@@ -6,7 +6,7 @@ import { BrowserBackend } from "./browser.js";
 import { config } from "./config.js";
 import { parseAssistantTurn } from "./tool-protocol.js";
 import { buildProjectBootstrapTurn } from "./project-bootstrap.js";
-import { hasConversationCheckpoint, isCompactionRequest, prepareCompactionMessages } from "./compaction.js";
+import { compactionTurn, hasConversationCheckpoint, isCompactionRequest, prepareCompactionMessages } from "./compaction.js";
 import { buildDeltaPrompt, buildInitialPrompt, commonPrefixLength } from "./transcript.js";
 import type { AssistantTurn, BrowserResponseUpdateHandler, ChatMessage, ToolDefinition } from "./types.js";
 
@@ -175,7 +175,11 @@ export class SessionManager {
     const page = await this.browser.newConversationPage();
     try {
       const prompt = buildInitialPrompt(prepareCompactionMessages(messages), []);
-      return parseAssistantTurn(await this.browser.sendPrompt(page, prompt, onUpdate), []);
+      // A checkpoint may legitimately quote tool-protocol markers from the
+      // retained transcript. Compaction never offers tools, so treat its web
+      // response as summary text instead of feeding it through the tool parser.
+      const content = await this.browser.sendPrompt(page, prompt, onUpdate);
+      return compactionTurn(content);
     } finally {
       await page.close().catch(() => undefined);
     }

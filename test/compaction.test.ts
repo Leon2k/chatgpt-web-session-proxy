@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   COMPACTION_TRANSCRIPT_BUDGET,
+  compactionTurn,
   hasConversationCheckpoint,
   isCompactionRequest,
   prepareCompactionMessages,
@@ -63,4 +64,14 @@ test("truncates tool-call arguments without changing their protocol fields", () 
   assert.equal(call?.function.name, "bash");
   assert.match(call?.function.arguments ?? "", /characters omitted/);
   assert.ok((call?.function.arguments.length ?? Infinity) <= 3_000);
+});
+
+test("treats quoted tool markers in a compaction checkpoint as summary text", () => {
+  const checkpoint = "<conversation-checkpoint><summary>Protocol used [[PI_TOOL_CALL]] markers.</summary></conversation-checkpoint>";
+  assert.deepEqual(compactionTurn(checkpoint), {
+    rawText: checkpoint,
+    content: checkpoint,
+    toolCalls: [],
+    finishReason: "stop",
+  });
 });
