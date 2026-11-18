@@ -1,17 +1,24 @@
 import crypto from "node:crypto";
+import { imageParts, imageReferenceHashes } from "./images.js";
 import { renderToolInstructions } from "./tool-protocol.js";
-import type { ChatMessage, ToolDefinition } from "./types.js";
+import type { ChatMessage, TextContentPart, ToolDefinition } from "./types.js";
 
 export function contentToText(content: ChatMessage["content"]): string {
   if (typeof content === "string") return content;
   if (!content) return "";
-  return content.filter((p) => p?.type === "text" || p?.type === "input_text").map((p) => p.text).join("\n");
+  return content
+    .filter((part): part is TextContentPart =>
+      (part?.type === "text" || part?.type === "input_text") && "text" in part
+    )
+    .map(part => part.text)
+    .join("\n");
 }
 
 function normalizedMessage(message: ChatMessage): unknown {
   return {
     role: message.role,
     content: contentToText(message.content),
+    images: imageReferenceHashes(message.content),
     name: message.name ?? null,
     tool_call_id: message.tool_call_id ?? null,
     tool_calls: message.tool_calls?.map((call) => ({ id: call.id, type: call.type, function: call.function })) ?? null,
@@ -30,7 +37,15 @@ export function commonPrefixLength(a: ChatMessage[], b: ChatMessage[]): number {
 }
 
 function renderMessage(message: ChatMessage): string {
-  const content = contentToText(message.content);
+  const attachments = imageParts(message.content);
+  const content = [
+    contentToText(message.content),
+    ...attachments.map((part, index) => {
+      const url = typeof part.image_url === "string" ? part.image_url : part.image_url.url;
+      const mime = /^data:([^;,]+)/i.exec(url)?.[1] ?? "image";
+      return `[Attached image ${index + 1}: ${mime}]`;
+    }),
+  ].filter(Boolean).join("\n");
   if (message.role === "tool") {
     return [`<tool_result id=${JSON.stringify(message.tool_call_id ?? "unknown")}${message.name ? ` name=${JSON.stringify(message.name)}` : ""}>`, content, "</tool_result>"].join("\n");
   }

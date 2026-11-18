@@ -5,8 +5,9 @@ import { jsonCompletion, OpenAICompletionStream } from "./openai.js";
 import { SessionDivergedError, SessionManager, SessionRestoreError } from "./sessions.js";
 import type { ChatCompletionRequest } from "./types.js";
 import { resolveRequestSessionId } from "./session-id.js";
+import { InvalidImageAttachmentError } from "./images.js";
 
-const app = Fastify({ logger: true, bodyLimit: 10 * 1024 * 1024 });
+const app = Fastify({ logger: true, bodyLimit: 24 * 1024 * 1024 });
 const browser = new BrowserBackend();
 const sessions = new SessionManager(browser);
 const MODEL_ID = "chatgpt-web-session";
@@ -46,6 +47,7 @@ app.post<{ Body: ChatCompletionRequest }>("/v1/chat/completions", async (request
   } catch (error) {
     request.log.error(error);
     if (stream?.hasStarted) { stream.fail(error); return; }
+    if (error instanceof InvalidImageAttachmentError) return reply.code(400).send({ error: { message: error.message, type: "invalid_image_attachment" } });
     if (error instanceof SessionDivergedError) return reply.code(409).send({ error: { message: error.message, type: "session_diverged" } });
     if (error instanceof SessionRestoreError) return reply.code(409).send({ error: { message: error.message, type: "session_restore_failed" } });
     return reply.code(502).send({ error: { message: error instanceof Error ? error.message : "ChatGPT web backend failed", type: "upstream_error" } });

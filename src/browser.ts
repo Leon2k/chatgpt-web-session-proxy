@@ -5,7 +5,7 @@ import { cdpLooksHeadless, cdpReachable, ensureRuntimeProfile, launchChromeForCd
 import { startXvfb, stopXvfb, type XvfbHandle } from "./xvfb.js";
 import { hideNativeChrome } from "./native-visibility.js";
 import { responseMarkdown } from "./response-markdown.js";
-import type { BrowserResponseUpdateHandler } from "./types.js";
+import type { BrowserResponseUpdateHandler, ImageAttachment } from "./types.js";
 
 const PROMPT_SELECTORS = [
   "#prompt-textarea",
@@ -255,6 +255,30 @@ export class BrowserBackend {
     }
   }
 
+  private async uploadImages(page: Page, images: ImageAttachment[]): Promise<void> {
+    if (!images.length) return;
+    const selectors = [
+      'input[type="file"][aria-label="Attach photos"]',
+      'input[type="file"][accept="image/*"][multiple]',
+      'input[type="file"][accept*="image"]',
+    ];
+    let input: Locator | null = null;
+    for (const selector of selectors) {
+      const candidate = page.locator(selector).last();
+      if (await candidate.count()) { input = candidate; break; }
+    }
+    if (!input) throw new Error("ChatGPT image attachment input was not found. The web UI may have changed.");
+    await input.setInputFiles(images.map(image => ({
+      name: image.name,
+      mimeType: image.mimeType,
+      buffer: image.buffer,
+    })));
+    await page.waitForFunction((names: string[]) => names.every(name =>
+      [...document.querySelectorAll("button[aria-label]")]
+        .some(button => button.getAttribute("aria-label") === `Remove ${name}`)
+    ), images.map(image => image.name), { timeout: 30_000 });
+  }
+
   private async assistantResponses(page: Page) {
     return page.locator(ASSISTANT_SELECTORS.join(",")).evaluateAll(nodes =>
       nodes.filter(node =>
@@ -275,8 +299,14 @@ export class BrowserBackend {
     );
   }
 
-  async sendPrompt(page: Page, text: string, onUpdate?: BrowserResponseUpdateHandler): Promise<string> {
+  async sendPrompt(
+    page: Page,
+    text: string,
+    onUpdate?: BrowserResponseUpdateHandler,
+    images: ImageAttachment[] = [],
+  ): Promise<string> {
     const before = new Set((await this.assistantResponses(page)).map(response => response.id));
+    await this.uploadImages(page, images);
     const prompt = await this.enterPrompt(page, text);
 
     const send = await this.firstVisible(page, SEND_SELECTORS);

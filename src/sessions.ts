@@ -7,6 +7,7 @@ import { config } from "./config.js";
 import { parseAssistantTurn } from "./tool-protocol.js";
 import { buildProjectBootstrapTurn } from "./project-bootstrap.js";
 import { compactionTurn, hasConversationCheckpoint, isCompactionRequest, prepareCompactionMessages } from "./compaction.js";
+import { extractImageAttachments } from "./images.js";
 import { buildDeltaPrompt, buildInitialPrompt, commonPrefixLength } from "./transcript.js";
 import type { AssistantTurn, BrowserResponseUpdateHandler, ChatMessage, ToolDefinition } from "./types.js";
 
@@ -219,6 +220,7 @@ export class SessionManager {
       }
 
       let prompt: string;
+      let forwardedMessages: ChatMessage[];
       if (session.bootstrapPending) {
         const prefix = commonPrefixLength(session.shadow, messages);
         if (prefix !== session.shadow.length) {
@@ -235,8 +237,10 @@ export class SessionManager {
         // complete client transcript: original request -> synthetic bash call
         // -> local snapshot result. ChatGPT can then continue the original task.
         prompt = buildInitialPrompt(messages, tools);
+        forwardedMessages = messages;
       } else if (session.shadow.length === 0) {
         prompt = buildInitialPrompt(messages, tools);
+        forwardedMessages = messages;
       } else {
         const prefix = commonPrefixLength(session.shadow, messages);
         if (prefix !== session.shadow.length) {
@@ -254,14 +258,17 @@ export class SessionManager {
           session.conversationUrl = undefined;
           session.bootstrapPending = false;
           prompt = buildInitialPrompt(messages, tools);
+          forwardedMessages = messages;
         } else {
           const delta = messages.slice(prefix);
           if (!delta.length) throw new SessionDivergedError(`Session ${id} has no new messages; refusing to duplicate an old ChatGPT turn.`);
           prompt = buildDeltaPrompt(delta, tools);
+          forwardedMessages = delta;
         }
       }
 
-      const turn = parseAssistantTurn(await this.browser.sendPrompt(session.page, prompt, onUpdate), tools);
+      const images = extractImageAttachments(forwardedMessages);
+      const turn = parseAssistantTurn(await this.browser.sendPrompt(session.page, prompt, onUpdate, images), tools);
       session.bootstrapPending = false;
       session.shadow = [...messages, { role: "assistant", content: turn.content, ...(turn.toolCalls.length ? { tool_calls: turn.toolCalls } : {}) }];
       session.conversationUrl = this.validConversationUrl(session.page.url()) ?? session.conversationUrl;

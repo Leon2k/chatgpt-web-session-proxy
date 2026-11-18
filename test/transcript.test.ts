@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { commonPrefixLength } from "../src/transcript.js";
+import { buildDeltaPrompt, commonPrefixLength } from "../src/transcript.js";
 import type { ChatMessage } from "../src/types.js";
 
 test("append-only transcript prefix", () => {
@@ -10,4 +10,25 @@ test("append-only transcript prefix", () => {
 
 test("divergence is detected", () => {
   assert.equal(commonPrefixLength([{ role: "user", content: "one" }], [{ role: "user", content: "two" }]), 0);
+});
+
+test("image attachments participate in transcript identity", () => {
+  const first: ChatMessage = { role: "user", content: [
+    { type: "text", text: "describe" },
+    { type: "image_url", image_url: { url: "data:image/png;base64,YQ==" } },
+  ] };
+  const second: ChatMessage = { role: "user", content: [
+    { type: "text", text: "describe" },
+    { type: "image_url", image_url: { url: "data:image/png;base64,Yg==" } },
+  ] };
+  assert.equal(commonPrefixLength([first], [second]), 0);
+});
+
+test("renders image attachment markers without embedding base64 in the prompt", () => {
+  const prompt = buildDeltaPrompt([{ role: "user", content: [
+    { type: "text", text: "describe" },
+    { type: "image_url", image_url: { url: "data:image/png;base64,YQ==" } },
+  ] }], []);
+  assert.match(prompt, /\[Attached image 1: image\/png\]/);
+  assert.doesNotMatch(prompt, /YQ==/);
 });

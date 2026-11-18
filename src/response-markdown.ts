@@ -23,13 +23,17 @@ function codeLanguage(node: HTMLElement): string {
 }
 
 function normalizeChatGptHtml(html: string): string {
-  return html.replace(/<button\b([^>]*)>[\s\S]*?<\/button>/gi, (button, attributes: string) => {
+  return html
+    // Generated images are commonly wrapped in an interactive preview button.
+    // Unwrap it before the generic UI-control removal drops its contents.
+    .replace(/<button\b[^>]*>((?:(?!<button\b)[\s\S])*?<img\b[\s\S]*?)<\/button>/gi, "$1")
+    .replace(/<button\b([^>]*)>[\s\S]*?<\/button>/gi, (button, attributes: string) => {
     if (!/\brole\s*=\s*["']checkbox["']/i.test(attributes)) return button;
     const checked = attributes.match(/\baria-checked\s*=\s*["'](true|false)["']/i)?.[1].toLowerCase();
     return checked === "true"
       ? '<span data-chatgpt-task-marker="checked">x</span>'
       : checked === "false" ? '<span data-chatgpt-task-marker="unchecked">x</span>' : button;
-  });
+    });
 }
 
 const converter = new TurndownService({
@@ -54,6 +58,17 @@ converter.addRule("chatgptCodeBlock", {
 converter.addRule("chatgptTaskMarker", {
   filter: node => node.nodeType === 1 && node.hasAttribute("data-chatgpt-task-marker"),
   replacement: (_content, node) => (node as HTMLElement).getAttribute("data-chatgpt-task-marker") === "checked" ? "[x] " : "[ ] ",
+});
+converter.addRule("chatgptImage", {
+  filter: node => node.nodeType === 1 && node.nodeName === "IMG",
+  replacement: (_content, node) => {
+    const image = node as HTMLImageElement;
+    const source = image.getAttribute("src")?.trim() ?? "";
+    if (!/^(?:https?:|data:image\/)/i.test(source)) return "";
+    const alt = (image.getAttribute("alt")?.trim() || "ChatGPT image")
+      .replace(/[\[\]]/g, "");
+    return `\n\n![${alt}](${source})\n\n`;
+  },
 });
 converter.addRule("chatgptTableCellParagraph", {
   filter: node => node.nodeType === 1 && node.nodeName === "P" && ["TD", "TH"].includes(node.parentElement?.nodeName ?? ""),

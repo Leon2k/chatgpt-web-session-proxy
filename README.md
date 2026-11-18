@@ -251,6 +251,8 @@ Authentication stays inside the Chrome profile; the proxy does not ask for or pe
 - session reset/list endpoints
 - optional local bearer auth
 - OS-aware invisible real-Chrome runtime
+- OpenAI `image_url` / `input_image` data-URL attachments uploaded to ChatGPT Web
+- ChatGPT response images preserved as Markdown when the rendered DOM exposes an HTTPS or data-image source
 
 ## Deliberate limitations
 
@@ -258,7 +260,8 @@ Authentication stays inside the Chrome profile; the proxy does not ask for or pe
 - Streaming polls the rendered ChatGPT DOM rather than an upstream token API. The proxy retains a short unstable tail so growing Markdown blocks are not emitted and then rewritten.
 - Tool-call responses remain buffered until protocol v3 is parsed, preventing partial `PI_TOOL_CALL` markers or arguments from leaking as assistant text.
 - Tool calls are prompt-emulated, not ChatGPT Web's internal tool system.
-- Images/files are not forwarded in this MVP.
+- Image input accepts base64 `data:image/...` URLs only, up to 8 MiB each and 10 images per turn. External URLs and non-image files are not fetched or forwarded.
+- Browser-local `blob:` response images cannot be opened by OpenCode and are omitted; normal signed HTTPS ChatGPT image URLs are retained.
 - Windows/macOS `hidden` mode hides native Chrome; it is not a separate virtual display server like Xvfb.
 - A site security challenge still needs manual completion through `npm run login`.
 
@@ -287,6 +290,28 @@ curl http://127.0.0.1:4153/v1/chat/completions \
       {"role":"user","content":"Reply with exactly: hello"}
     ]
   }'
+```
+
+For image input, declare the OpenCode model with `"input": ["text", "image"]`. OpenCode then sends local image attachments as OpenAI-compatible `image_url` data URLs. The proxy decodes and uploads them through ChatGPT's authenticated attachment input; base64 bytes are represented by a short marker in the text prompt rather than pasted into the composer.
+
+```json
+"capabilities": {
+  "tools": true,
+  "input": ["text", "image"],
+  "output": ["text"]
+}
+```
+
+Direct API example:
+
+```json
+{
+  "role": "user",
+  "content": [
+    { "type": "text", "text": "What is shown in this image?" },
+    { "type": "image_url", "image_url": { "url": "data:image/png;base64,..." } }
+  ]
+}
 ```
 
 For the next request with the same session, send the full OpenAI transcript including the previous assistant response plus the new user message. The proxy verifies that the transcript is an append-only continuation but forwards only the new delta to the already-existing ChatGPT conversation.

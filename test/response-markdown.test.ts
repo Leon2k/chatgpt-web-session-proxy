@@ -72,3 +72,14 @@ assert.equal(responseMarkdown("Answer Copy", "<p>Answer</p><button>Copy</button>
 test("falls back to plain text when HTML is empty", () => {
 assert.equal(responseMarkdown("Original answer", ""), "Original answer");
 });
+
+test("preserves generated images wrapped in ChatGPT preview buttons", () => {
+  const html = '<p>Created image:</p><button aria-label="Open image"><span><img alt="Blue square" src="https://files.example.test/generated.png"></span></button>';
+  const markdown = responseMarkdown("Created image", html);
+  assert.match(markdown, /Created image:/);
+  assert.match(markdown, /!\[Blue square\]\(https:\/\/files\.example\.test\/generated\.png\)/);
+});
+
+test("drops browser-local blob images that OpenCode cannot load", () => {
+  assert.equal(responseMarkdown("preview", '<img alt="preview" src="blob:https://chatgpt.com/id">'), "preview");
+});

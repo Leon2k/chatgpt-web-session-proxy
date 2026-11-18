@@ -1,4 +1,9 @@
 export type TextContentPart = { type: "text" | "input_text"; text: string };
+export type ImageUrlContentPart = {
+  type: "image_url" | "input_image";
+  image_url: string | { url: string; detail?: "auto" | "low" | "high" };
+};
+export type ChatContentPart = TextContentPart | ImageUrlContentPart;
 
 export type ToolCall = {
   id: string;
@@ -8,7 +13,7 @@ export type ToolCall = {
 
 export type ChatMessage = {
   role: "system" | "developer" | "user" | "assistant" | "tool";
-  content?: string | TextContentPart[] | null;
+  content?: string | ChatContentPart[] | null;
   name?: string;
   tool_call_id?: string;
   tool_calls?: ToolCall[];
@@ -43,3 +48,9 @@ export type BrowserResponseUpdate = {
 };
 
 export type BrowserResponseUpdateHandler = (update: BrowserResponseUpdate) => void | Promise<void>;
+
+export type ImageAttachment = {
+  name: string;
+  mimeType: string;
+  buffer: Buffer;
+};
