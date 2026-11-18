@@ -168,17 +168,16 @@ export class SessionManager {
     return session;
   }
 
-  private async completeCompaction(
-    messages: ChatMessage[],
-    onUpdate?: BrowserResponseUpdateHandler,
-  ): Promise<AssistantTurn> {
+  private async completeCompaction(messages: ChatMessage[]): Promise<AssistantTurn> {
     const page = await this.browser.newConversationPage();
     try {
       const prompt = buildInitialPrompt(prepareCompactionMessages(messages), []);
       // A checkpoint may legitimately quote tool-protocol markers from the
       // retained transcript. Compaction never offers tools, so treat its web
       // response as summary text instead of feeding it through the tool parser.
-      const content = await this.browser.sendPrompt(page, prompt, onUpdate);
+      // Do not stream service-only compaction: ChatGPT may revise earlier
+      // Markdown while composing the checkpoint, which is not append-only.
+      const content = await this.browser.sendPrompt(page, prompt);
       return compactionTurn(content);
     } finally {
       await page.close().catch(() => undefined);
@@ -199,7 +198,7 @@ export class SessionManager {
       // asks the provider for a summary. Run that one request in an isolated
       // ChatGPT conversation so it cannot diverge or mutate the live session.
       if (isCompactionRequest(messages)) {
-        return this.completeCompaction(messages, onUpdate);
+        return this.completeCompaction(messages);
       }
 
       // On the first turn of a brand-new session, deterministically ask Pi to
