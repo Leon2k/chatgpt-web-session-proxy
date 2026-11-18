@@ -252,7 +252,7 @@ Authentication stays inside the Chrome profile; the proxy does not ask for or pe
 - optional local bearer auth
 - OS-aware invisible real-Chrome runtime
 - OpenAI `image_url` / `input_image` data-URL attachments uploaded to ChatGPT Web
-- ChatGPT response images preserved as Markdown when the rendered DOM exposes an HTTPS or data-image source
+- ChatGPT response and generated images preserved as portable Markdown data or HTTPS images
 
 ## Deliberate limitations
 
@@ -261,7 +261,7 @@ Authentication stays inside the Chrome profile; the proxy does not ask for or pe
 - Tool-call responses remain buffered until protocol v3 is parsed, preventing partial `PI_TOOL_CALL` markers or arguments from leaking as assistant text.
 - Tool calls are prompt-emulated, not ChatGPT Web's internal tool system.
 - Image input accepts base64 PNG, JPEG, WebP, GIF, and AVIF data URLs only, up to 8 MiB each and 10 images per turn. External URLs, SVG, and non-image files are not fetched or forwarded.
-- Browser-local `blob:` response images cannot be opened by OpenCode and are omitted; normal signed HTTPS ChatGPT image URLs are retained.
+- Completed browser-local `blob:` response images are converted to portable `data:image/...` Markdown (up to 16 MiB each); normal HTTPS and data-image sources are retained.
 - Windows/macOS `hidden` mode hides native Chrome; it is not a separate virtual display server like Xvfb.
 - A site security challenge still needs manual completion through `npm run login`.
 

@@ -23,6 +23,12 @@ test("waits while a new assistant response is still empty", () => {
   assert.equal(selectNewAssistantResponse([response("new", "")], new Set()), undefined);
 });
 
+test("selects an image-only assistant response", () => {
+  const image = response("new-image", "");
+  image.html = '<button data-testid="generated-image-preview"><img alt="Generated image" src="data:image/png;base64,AA=="></button>';
+  assert.equal(selectNewAssistantResponse([image], new Set())?.id, "new-image");
+});
+
 test("uses the newest non-empty response created by the turn", () => {
   const responses = [response("new-1", "draft"), response("new-2", "final")];
   assert.equal(selectNewAssistantResponse(responses, new Set())?.id, "new-2");

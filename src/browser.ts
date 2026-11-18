@@ -17,6 +17,7 @@ const PROMPT_SELECTORS = [
 const ASSISTANT_SELECTORS = [
   '[data-chatgpt-search-unit-key$=":assistant"] [data-dil-response]',
   '[data-chatgpt-search-unit-key$=":assistant"] [data-response-body]',
+  '[data-response-body]',
   '[data-message-author-role="assistant"]',
   'article[data-testid^="conversation-turn-"] [data-message-author-role="assistant"]',
 ];
@@ -45,7 +46,9 @@ export function selectNewAssistantResponse(
   // ChatGPT can append an empty completed placeholder after the real answer,
   // sometimes reusing an older response ID. Select the newest non-empty node
   // created by this turn instead of assuming the final DOM node is the answer.
-  return responses.findLast(response => !before.has(response.id) && response.text.trim().length > 0);
+  return responses.findLast(response =>
+    !before.has(response.id) && (response.text.trim().length > 0 || /<img\b/i.test(response.html))
+  );
 }
 
 export class BrowserBackend {
@@ -304,21 +307,50 @@ export class BrowserBackend {
   }
 
   private async assistantResponses(page: Page) {
-    return page.locator(ASSISTANT_SELECTORS.join(",")).evaluateAll(nodes =>
-      nodes.filter(node =>
+    return page.locator(ASSISTANT_SELECTORS.join(",")).evaluateAll(async nodes =>
+      Promise.all(nodes.filter(node =>
         node.hasAttribute("data-dil-response") ||
         (node.hasAttribute("data-response-body") && !node.querySelector("[data-dil-response]")) ||
         !node.querySelector("[data-response-body], [data-dil-response]")
-      ).map((node, index) => ({
-        id: node.getAttribute("data-response-body") ||
+      ).map(async (node, index) => {
+        const state = node.closest("[data-talvt-turn-state]")?.getAttribute("data-talvt-turn-state") ?? null;
+        const clone = node.cloneNode(true) as HTMLElement;
+
+        // ChatGPT renders generated images with browser-local blob: URLs. Once the
+        // turn is complete, make those images portable before serializing the DOM.
+        if (state === null || state === "complete") {
+          const sourceImages = [...node.querySelectorAll("img")];
+          const clonedImages = [...clone.querySelectorAll("img")];
+          await Promise.all(sourceImages.map(async (image, imageIndex) => {
+            if (!image.src.startsWith("blob:")) return;
+            try {
+              const response = await fetch(image.src);
+              const blob = await response.blob();
+              if (!response.ok || !blob.type.startsWith("image/") || blob.size > 16 * 1024 * 1024) return;
+              const dataUrl = await new Promise<string>((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = () => resolve(String(reader.result));
+                reader.onerror = () => reject(reader.error);
+                reader.readAsDataURL(blob);
+              });
+              clonedImages[imageIndex]?.setAttribute("src", dataUrl);
+            } catch {
+              // Keep the original blob URL; responseMarkdown will discard it.
+            }
+          }));
+        }
+
+        return {
+          id: node.getAttribute("data-response-body") ||
           node.getAttribute("data-message-id") ||
           node.closest("[data-chatgpt-search-unit-key]")?.getAttribute("data-chatgpt-search-unit-key") ||
           node.closest("[data-turn-key]")?.getAttribute("data-turn-key") ||
           node.closest("article")?.getAttribute("data-testid") ||
           `legacy-${index}`,
-        text: (node as HTMLElement).innerText.trim(),
-        html: node.innerHTML,
-        state: node.closest("[data-talvt-turn-state]")?.getAttribute("data-talvt-turn-state") ?? null,
+          text: (node as HTMLElement).innerText.trim(),
+          html: clone.innerHTML,
+          state,
+        };
       }))
     );
   }
@@ -366,7 +398,7 @@ export class BrowserBackend {
         const running = Boolean(await this.firstVisible(page, STOP_SELECTORS));
         const complete = current.state === null || current.state === "complete";
 
-        if (last && complete && !running && Date.now() - stableSince >= config.settleMs) {
+        if (markdown && complete && !running && Date.now() - stableSince >= config.settleMs) {
           return markdown;
         }
       }

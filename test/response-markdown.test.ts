@@ -83,3 +83,8 @@ test("preserves generated images wrapped in ChatGPT preview buttons", () => {
 test("drops browser-local blob images that OpenCode cannot load", () => {
   assert.equal(responseMarkdown("preview", '<img alt="preview" src="blob:https://chatgpt.com/id">'), "preview");
 });
+
+test("preserves portable data URLs for generated images", () => {
+  const markdown = responseMarkdown("Edit", '<button data-testid="generated-image-preview"><img alt="Generated image 1" src="data:image/png;base64,AA=="></button>');
+  assert.equal(markdown, "![Generated image 1](data:image/png;base64,AA==)");
+});
