@@ -7,9 +7,10 @@ import { config } from "./config.js";
 import { parseAssistantTurn } from "./tool-protocol.js";
 import { buildProjectBootstrapTurn } from "./project-bootstrap.js";
 import { compactionTurn, hasConversationCheckpoint, isCompactionRequest, prepareCompactionMessages } from "./compaction.js";
+import { decodeEncodedAttachments, extractFileAttachments, MAX_FILES_PER_TURN, type EncodedAttachment } from "./attachments.js";
 import { extractImageAttachments } from "./images.js";
 import { buildDeltaPrompt, buildInitialPrompt, changedInstructionMessages, commonPrefixLength, contentToText } from "./transcript.js";
-import type { AssistantTurn, BrowserResponseUpdateHandler, ChatMessage, ToolDefinition } from "./types.js";
+import type { AssistantTurn, BrowserResponseUpdateHandler, ChatMessage, FileAttachment, ToolDefinition } from "./types.js";
 
 class SerialQueue {
   private tail: Promise<unknown> = Promise.resolve();
@@ -56,6 +57,7 @@ export function validChatGptConversationUrl(url: string | undefined): string | u
 export class SessionManager {
   private sessions = new Map<string, Session>();
   private pendingSessions = new Map<string, Promise<Session>>();
+  private pendingAttachments = new Map<string, FileAttachment[]>();
   private browserQueue = new SerialQueue();
   private cleanupTimer?: NodeJS.Timeout;
   constructor(private readonly browser: BrowserBackend) {}
@@ -76,6 +78,7 @@ export class SessionManager {
     await Promise.allSettled([...this.sessions.values()].map((s) => s.page.close()));
     this.sessions.clear();
     this.pendingSessions.clear();
+    this.pendingAttachments.clear();
   }
 
   list() {
@@ -121,6 +124,7 @@ export class SessionManager {
       await existing.page.close().catch(() => undefined);
       deleted = true;
     }
+    this.pendingAttachments.delete(id);
     try {
       await fs.unlink(this.statePath(id));
       deleted = true;
@@ -128,6 +132,50 @@ export class SessionManager {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
     return deleted;
+  }
+
+  queueAttachments(id: string, files: EncodedAttachment[]): number {
+    const decoded = decodeEncodedAttachments(files);
+    const current = this.pendingAttachments.get(id) ?? [];
+    if (current.length + decoded.length > MAX_FILES_PER_TURN) {
+      throw new Error(`A turn may contain at most ${MAX_FILES_PER_TURN} queued files.`);
+    }
+    this.pendingAttachments.set(id, [...current, ...decoded]);
+    return decoded.length;
+  }
+
+  private async withConversation<T>(
+    id: string,
+    action: (page: Page, conversationUrl: string) => Promise<T>,
+  ): Promise<{ found: boolean; result?: T }> {
+    const existing = this.sessions.get(id);
+    if (existing) {
+      const url = this.validConversationUrl(existing.conversationUrl) ?? this.validConversationUrl(existing.page.url());
+      if (!url) return { found: false };
+      const result = await existing.queue.run(() => this.browserQueue.run(() => action(existing.page, url)));
+      return { found: true, result };
+    }
+
+    const persisted = await this.readPersisted(id);
+    const url = this.validConversationUrl(persisted?.conversationUrl);
+    if (!url) return { found: false };
+    const result = await this.browserQueue.run(async () => {
+      const page = await this.browser.newLifecyclePage(url);
+      try { return await action(page, url); }
+      finally { await page.close().catch(() => undefined); }
+    });
+    return { found: true, result };
+  }
+
+  async setArchived(id: string, archived: boolean): Promise<{ found: boolean; state?: "changed" | "unchanged" }> {
+    const outcome = await this.withConversation(id, (page, url) => this.browser.setConversationArchived(page, url, archived));
+    return { found: outcome.found, state: outcome.result };
+  }
+
+  async deleteRemote(id: string): Promise<{ found: boolean; remote?: "deleted" | "missing"; localDeleted: boolean }> {
+    const outcome = await this.withConversation(id, (page, url) => this.browser.deleteConversation(page, url));
+    const localDeleted = await this.reset(id);
+    return { found: outcome.found, remote: outcome.result, localDeleted };
   }
 
   private async cleanupExpired(): Promise<void> {
@@ -232,7 +280,9 @@ export class SessionManager {
     messages: ChatMessage[],
     tools: ToolDefinition[] = [],
     onUpdate?: BrowserResponseUpdateHandler,
+    requestKind?: string,
   ): Promise<AssistantTurn> {
+    if (requestKind === "title") return this.localAuxiliaryTurn(messages);
     const session = await this.getOrCreate(id);
     const queuedBehindAnother = session.queue.busy;
     if (queuedBehindAnother && tools.length === 0 && !isCompactionRequest(messages)) {
@@ -313,10 +363,24 @@ export class SessionManager {
         }
       }
 
-      const images = extractImageAttachments(forwardedMessages);
-      const turn = parseAssistantTurn(await this.browserQueue.run(() =>
-        this.browser.sendPrompt(session.page, prompt, onUpdate, images)
-      ), tools);
+      const inlineAttachments = [
+        ...extractImageAttachments(forwardedMessages),
+        ...extractFileAttachments(forwardedMessages),
+      ];
+      const queuedAttachments = this.pendingAttachments.get(id) ?? [];
+      this.pendingAttachments.delete(id);
+      let raw: string;
+      try {
+        raw = await this.browserQueue.run(() =>
+          this.browser.sendPrompt(session.page, prompt, onUpdate, [...inlineAttachments, ...queuedAttachments])
+        );
+      } catch (error) {
+        if (queuedAttachments.length) {
+          this.pendingAttachments.set(id, [...queuedAttachments, ...(this.pendingAttachments.get(id) ?? [])]);
+        }
+        throw error;
+      }
+      const turn = parseAssistantTurn(raw, tools);
       session.bootstrapPending = false;
       session.shadow = [...messages, { role: "assistant", content: turn.content, ...(turn.toolCalls.length ? { tool_calls: turn.toolCalls } : {}) }];
       session.conversationUrl = this.validConversationUrl(session.page.url()) ?? session.conversationUrl;

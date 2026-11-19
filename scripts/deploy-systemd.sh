@@ -9,7 +9,10 @@ timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
 stage_dir="$(mktemp -d "${target_dir}.stage.XXXXXX")"
 rollback_dir="${target_dir}.rollback-${timestamp}"
 backup_file="${backup_root}/chatgpt-web-session-proxy-${timestamp}.tar.gz"
+opencode_plugin_dir="${OPENCODE_PLUGIN_TARGET:-/home/opencode/.config/opencode/plugins/chatgpt-web-session-proxy}"
+opencode_plugin_backup="${backup_root}/opencode-plugin-${timestamp}.tar.gz"
 switched=0
+plugin_switched=0
 
 cleanup() {
   if [[ -n "$stage_dir" && "$stage_dir" == "${target_dir}.stage."* && -d "$stage_dir" ]]; then
@@ -28,6 +31,16 @@ rollback() {
     mv -- "$rollback_dir" "$target_dir"
     systemctl start "$service_name" || true
     echo "Deployment failed; restored $target_dir from $rollback_dir" >&2
+  fi
+  if (( plugin_switched )); then
+    rm -rf -- "$opencode_plugin_dir"
+    if [[ -f "$opencode_plugin_backup" ]]; then
+      install -d -m 0750 -o opencode -g opencode "$(dirname "$opencode_plugin_dir")"
+      tar -C "$(dirname "$opencode_plugin_dir")" -xzf "$opencode_plugin_backup"
+      chown -R opencode:opencode "$opencode_plugin_dir"
+    fi
+    systemctl restart opencode.service || true
+    echo "Deployment failed; restored the previous OpenCode integration plugin." >&2
   fi
   exit "$exit_code"
 }
@@ -55,6 +68,9 @@ fi
 commit="$("${git_safe[@]}" rev-parse HEAD)"
 mkdir -p -- "$backup_root"
 tar -C "$(dirname "$target_dir")" -czf "$backup_file" "$(basename "$target_dir")"
+if [[ -d "$opencode_plugin_dir" ]]; then
+  tar -C "$(dirname "$opencode_plugin_dir")" -czf "$opencode_plugin_backup" "$(basename "$opencode_plugin_dir")"
+fi
 echo "Backup: $backup_file"
 
 "${git_safe[@]}" archive --format=tar HEAD | tar -xf - -C "$stage_dir"
@@ -80,7 +96,24 @@ systemctl start "$service_name"
 for _ in {1..30}; do
   health_code="$(curl --silent --output /dev/null --write-out '%{http_code}' http://127.0.0.1:4153/health || true)"
   if systemctl is-active --quiet "$service_name" && [[ "$health_code" == 200 || "$health_code" == 401 ]]; then
+    bash "$target_dir/scripts/install-opencode-plugin.sh"
+    plugin_switched=1
+    systemctl restart opencode.service
+    opencode_ready=0
+    for _ in {1..30}; do
+      opencode_code="$(curl --silent --output /dev/null --write-out '%{http_code}' http://127.0.0.1:4096/ || true)"
+      if systemctl is-active --quiet opencode.service && [[ "$opencode_code" == 200 || "$opencode_code" == 401 ]]; then
+        opencode_ready=1
+        break
+      fi
+      sleep 1
+    done
+    if (( ! opencode_ready )); then
+      echo "OpenCode did not become healthy after installing the integration plugin." >&2
+      exit 1
+    fi
     switched=0
+    plugin_switched=0
     echo "Deployed commit $commit"
     echo "Rollback copy: $rollback_dir"
     systemctl --no-pager --full status "$service_name"

@@ -5,7 +5,7 @@ import { cdpLooksHeadless, cdpReachable, ensureRuntimeProfile, launchChromeForCd
 import { startXvfb, stopXvfb, type XvfbHandle } from "./xvfb.js";
 import { hideNativeChrome } from "./native-visibility.js";
 import { responseMarkdown } from "./response-markdown.js";
-import type { BrowserResponseUpdateHandler, ImageAttachment } from "./types.js";
+import type { BrowserResponseUpdateHandler, FileAttachment } from "./types.js";
 
 const PROMPT_SELECTORS = [
   "#prompt-textarea",
@@ -173,6 +173,18 @@ export class BrowserBackend {
     return page;
   }
 
+  async newLifecyclePage(url: string): Promise<Page> {
+    await this.start();
+    const page = await this.context!.newPage();
+    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 60_000 });
+    const body = (await page.locator("body").innerText({ timeout: 15_000 }).catch(() => "")).slice(0, 2_000);
+    if (/log in|sign up|continue with google|continue with microsoft|continue with apple/i.test(body)) {
+      await page.close().catch(() => undefined);
+      throw new Error("The ChatGPT lifecycle page is not authenticated.");
+    }
+    return page;
+  }
+
   private async firstVisible(page: Page, selectors: string[]): Promise<Locator | null> {
     for (const selector of selectors) {
       const candidates = page.locator(selector);
@@ -258,19 +270,24 @@ export class BrowserBackend {
     }
   }
 
-  private async uploadImages(page: Page, images: ImageAttachment[]): Promise<void> {
-    if (!images.length) return;
-    const selectors = [
+  private async uploadAttachments(page: Page, attachments: FileAttachment[]): Promise<void> {
+    if (!attachments.length) return;
+    const imagesOnly = attachments.every(attachment => attachment.mimeType.startsWith("image/"));
+    const selectors = imagesOnly ? [
       'input[type="file"][aria-label="Attach photos"]',
       'input[type="file"][accept="image/*"][multiple]',
       'input[type="file"][accept*="image"]',
+      'input[type="file"][aria-label="Attach files"]',
+    ] : [
+      'input[type="file"][aria-label="Attach files"]',
+      'input[type="file"]:not([accept])',
     ];
     let input: Locator | null = null;
     for (const selector of selectors) {
       const candidate = page.locator(selector).last();
       if (await candidate.count()) { input = candidate; break; }
     }
-    if (!input) throw new Error("ChatGPT image attachment input was not found. The web UI may have changed.");
+    if (!input) throw new Error("ChatGPT file attachment input was not found. The web UI may have changed.");
     let processed = 0;
     let settleUpload!: () => void;
     let failUpload!: (error: Error) => void;
@@ -278,22 +295,22 @@ export class BrowserBackend {
       settleUpload = resolve;
       failUpload = reject;
     });
-    const timeout = setTimeout(() => failUpload(new Error("Timed out waiting for ChatGPT to process image attachments.")), 60_000);
+    const timeout = setTimeout(() => failUpload(new Error("Timed out waiting for ChatGPT to process file attachments.")), 90_000);
     const onResponse = (response: import("playwright").Response) => {
       if (!response.url().includes("/backend-api/files/process_upload_stream")) return;
       if (!response.ok()) {
-        failUpload(new Error(`ChatGPT rejected an image attachment with HTTP ${response.status()}.`));
+        failUpload(new Error(`ChatGPT rejected a file attachment with HTTP ${response.status()}.`));
         return;
       }
       processed += 1;
-      if (processed >= images.length) settleUpload();
+      if (processed >= attachments.length) settleUpload();
     };
     page.on("response", onResponse);
     try {
-      await input.setInputFiles(images.map(image => ({
-        name: image.name,
-        mimeType: image.mimeType,
-        buffer: image.buffer,
+      await input.setInputFiles(attachments.map(attachment => ({
+        name: attachment.name,
+        mimeType: attachment.mimeType,
+        buffer: attachment.buffer,
       })));
       await uploadsComplete;
     } finally {
@@ -303,7 +320,58 @@ export class BrowserBackend {
     await page.waitForFunction((names: string[]) => names.every(name =>
       [...document.querySelectorAll("button[aria-label]")]
         .some(button => button.getAttribute("aria-label") === `Remove ${name}`)
-    ), images.map(image => image.name), { timeout: 30_000 });
+    ), attachments.map(attachment => attachment.name), { timeout: 45_000 });
+  }
+
+  private async prepareLifecyclePage(page: Page, conversationUrl: string): Promise<void> {
+    let sameConversation = false;
+    try { sameConversation = new URL(page.url()).pathname === new URL(conversationUrl).pathname; } catch { /* navigate below */ }
+    if (!sameConversation) await page.goto(conversationUrl, { waitUntil: "domcontentloaded", timeout: 60_000 });
+    await page.waitForLoadState("domcontentloaded");
+  }
+
+  private async openConversationMenu(page: Page): Promise<void> {
+    await page.keyboard.press("Escape").catch(() => undefined);
+    const button = page.locator('button.conversation-header-control[aria-haspopup="menu"]').first();
+    await button.waitFor({ state: "visible", timeout: 30_000 });
+    await button.click();
+  }
+
+  async setConversationArchived(page: Page, conversationUrl: string, archived: boolean): Promise<"changed" | "unchanged"> {
+    await this.prepareLifecyclePage(page, conversationUrl);
+    await this.openConversationMenu(page);
+    const desired = archived ? "Archive" : "Unarchive";
+    const opposite = archived ? "Unarchive" : "Archive";
+    const desiredItem = page.getByRole("menuitem", { name: desired, exact: true }).last();
+    if (await desiredItem.isVisible().catch(() => false)) {
+      await desiredItem.click();
+      await page.waitForTimeout(700);
+      return "changed";
+    }
+    if (await page.getByRole("menuitem", { name: opposite, exact: true }).last().isVisible().catch(() => false)) {
+      await page.keyboard.press("Escape").catch(() => undefined);
+      return "unchanged";
+    }
+    throw new Error(`ChatGPT conversation menu did not expose ${desired} or ${opposite}.`);
+  }
+
+  async deleteConversation(page: Page, conversationUrl: string): Promise<"deleted" | "missing"> {
+    await this.prepareLifecyclePage(page, conversationUrl);
+    if (page.url() !== conversationUrl) {
+      try {
+        if (new URL(page.url()).pathname !== new URL(conversationUrl).pathname) return "missing";
+      } catch { /* continue to the normal selector error */ }
+    }
+    await this.openConversationMenu(page);
+    const item = page.getByRole("menuitem", { name: "Delete", exact: true }).last();
+    await item.waitFor({ state: "visible", timeout: 10_000 });
+    await item.click();
+    const dialog = page.getByRole("dialog");
+    const confirm = dialog.getByRole("button", { name: "Delete", exact: true }).last();
+    await confirm.waitFor({ state: "visible", timeout: 10_000 });
+    await confirm.click();
+    await page.waitForTimeout(700);
+    return "deleted";
   }
 
   private async assistantResponses(page: Page) {
@@ -375,10 +443,10 @@ export class BrowserBackend {
     page: Page,
     text: string,
     onUpdate?: BrowserResponseUpdateHandler,
-    images: ImageAttachment[] = [],
+    attachments: FileAttachment[] = [],
   ): Promise<string> {
     const before = new Set((await this.assistantResponses(page)).map(response => response.id));
-    await this.uploadImages(page, images);
+    await this.uploadAttachments(page, attachments);
     const prompt = await this.enterPrompt(page, text);
 
     const send = await this.firstVisible(page, SEND_SELECTORS);

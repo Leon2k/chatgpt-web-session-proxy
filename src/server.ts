@@ -6,8 +6,9 @@ import { SessionDivergedError, SessionManager, SessionRestoreError } from "./ses
 import type { ChatCompletionRequest } from "./types.js";
 import { resolveRequestSessionId } from "./session-id.js";
 import { InvalidImageAttachmentError } from "./images.js";
+import { InvalidFileAttachmentError, type EncodedAttachment } from "./attachments.js";
 
-const app = Fastify({ logger: true, bodyLimit: 24 * 1024 * 1024 });
+const app = Fastify({ logger: true, bodyLimit: 32 * 1024 * 1024 });
 const browser = new BrowserBackend();
 const sessions = new SessionManager(browser);
 const MODEL_ID = "chatgpt-web-session";
@@ -22,6 +23,26 @@ app.get("/health", async () => ({ ok: true, sessions: sessions.list().length }))
 app.get("/v1/models", async () => ({ object: "list", data: [{ id: MODEL_ID, object: "model", created: 0, owned_by: "chatgpt-web-session-proxy" }] }));
 app.get("/v1/sessions", async () => ({ data: sessions.list() }));
 app.delete<{ Params: { id: string } }>("/v1/sessions/:id", async (request) => ({ id: request.params.id, deleted: await sessions.reset(request.params.id) }));
+app.post<{ Params: { id: string }; Body: { files: EncodedAttachment[] } }>("/v1/sessions/:id/attachments", async (request, reply) => {
+  try {
+    const accepted = sessions.queueAttachments(request.params.id, request.body?.files ?? []);
+    return { id: request.params.id, accepted };
+  } catch (error) {
+    if (error instanceof InvalidFileAttachmentError || error instanceof Error) {
+      return reply.code(400).send({ error: { message: error.message, type: "invalid_file_attachment" } });
+    }
+    throw error;
+  }
+});
+app.post<{ Params: { id: string }; Body: { archived: boolean } }>("/v1/sessions/:id/lifecycle/archive", async (request) => ({
+  id: request.params.id,
+  archived: Boolean(request.body?.archived),
+  ...(await sessions.setArchived(request.params.id, Boolean(request.body?.archived))),
+}));
+app.delete<{ Params: { id: string } }>("/v1/sessions/:id/lifecycle/remote", async (request) => ({
+  id: request.params.id,
+  ...(await sessions.deleteRemote(request.params.id)),
+}));
 
 app.post<{ Body: ChatCompletionRequest }>("/v1/chat/completions", async (request, reply) => {
   const body = request.body;
@@ -34,19 +55,22 @@ app.post<{ Body: ChatCompletionRequest }>("/v1/chat/completions", async (request
     return reply.code(400).send({ error: { message, type: "invalid_request_error" } });
   }
   const { sessionId, source: sessionSource } = resolvedSession;
+  const requestKindHeader = request.headers["x-opencode-request-kind"];
+  const requestKind = Array.isArray(requestKindHeader) ? requestKindHeader[0] : requestKindHeader;
   const stream = body.stream
     ? new OpenAICompletionStream(reply, body.model || MODEL_ID, Boolean(body.tools?.length))
     : undefined;
 
   try {
-    request.log.info({ sessionId, sessionSource, tools: (body.tools ?? []).map((tool) => tool.function?.name).filter(Boolean) }, "chat completion request");
-    const turn = await sessions.complete(sessionId, body.messages, body.tools ?? [], update => stream?.update(update));
+    request.log.info({ sessionId, sessionSource, requestKind, tools: (body.tools ?? []).map((tool) => tool.function?.name).filter(Boolean) }, "chat completion request");
+    const turn = await sessions.complete(sessionId, body.messages, body.tools ?? [], update => stream?.update(update), requestKind);
     request.log.info({ sessionId, sessionSource, finishReason: turn.finishReason, toolCalls: turn.toolCalls.map((call) => call.function.name) }, "chat completion response");
     if (stream) { stream.finish(turn); return; }
     return reply.send(jsonCompletion(body.model || MODEL_ID, turn));
   } catch (error) {
     request.log.error(error);
     if (stream?.hasStarted) { stream.fail(error); return; }
+    if (error instanceof InvalidFileAttachmentError) return reply.code(400).send({ error: { message: error.message, type: "invalid_file_attachment" } });
     if (error instanceof InvalidImageAttachmentError) return reply.code(400).send({ error: { message: error.message, type: "invalid_image_attachment" } });
     if (error instanceof SessionDivergedError) return reply.code(409).send({ error: { message: error.message, type: "session_diverged" } });
     if (error instanceof SessionRestoreError) return reply.code(409).send({ error: { message: error.message, type: "session_restore_failed" } });

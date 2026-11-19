@@ -248,6 +248,8 @@ Authentication stays inside the Chrome profile; the proxy does not ask for or pe
 - local handling of parallel metadata/title requests so they do not create duplicate ChatGPT chats
 - one active ChatGPT Web request globally to reduce rate-limit pressure on the account
 - one ChatGPT conversation per local session
+- OpenCode lifecycle synchronization: archive, unarchive, and delete the matching ChatGPT Web conversation
+- an unprivileged local OpenCode plugin that forwards lifecycle events and non-image attachments over loopback only
 - OpenCode compaction stays in that same ChatGPT conversation instead of rotating to a new web chat
 - persisted conversation URL + append-only shadow transcript
 - prompt-emulated tool calls translated to OpenAI `tool_calls`
@@ -256,6 +258,8 @@ Authentication stays inside the Chrome profile; the proxy does not ask for or pe
 - optional local bearer auth
 - OS-aware invisible real-Chrome runtime
 - OpenAI `image_url` / `input_image` data-URL attachments uploaded to ChatGPT Web
+- arbitrary OpenCode file attachments uploaded through ChatGPT Web's ordinary file picker (up to 20 MiB each and 10 files per turn)
+- image files returned by local/MCP tools are uploaded on the next tool-result turn, including screenshot tools such as MobileMCP
 - ChatGPT response and generated images preserved as portable Markdown data or HTTPS images
 
 ## Deliberate limitations
@@ -264,7 +268,7 @@ Authentication stays inside the Chrome profile; the proxy does not ask for or pe
 - Streaming polls the rendered ChatGPT DOM rather than an upstream token API. The proxy retains a short unstable tail so growing Markdown blocks are not emitted and then rewritten.
 - Tool-call responses remain buffered until protocol v3 is parsed, preventing partial `PI_TOOL_CALL` markers or arguments from leaking as assistant text.
 - Tool calls are prompt-emulated, not ChatGPT Web's internal tool system.
-- Image input accepts base64 PNG, JPEG, WebP, GIF, and AVIF data URLs only, up to 8 MiB each and 10 images per turn. External URLs, SVG, and non-image files are not fetched or forwarded.
+- Native image input accepts base64 PNG, JPEG, WebP, GIF, and AVIF data URLs, up to 8 MiB each. The bundled OpenCode plugin forwards other local attachments through a loopback-only staging endpoint, up to 20 MiB each and 10 files per turn. ChatGPT Web may still reject a file type that its own UI does not support.
 - Completed browser-local generated images are resized to at most 384 px and encoded as WebP before portable `data:image/...` Markdown is returned; this keeps chat rendering and context size bounded. Normal HTTPS and data-image sources are retained.
 - Windows/macOS `hidden` mode hides native Chrome; it is not a separate virtual display server like Xvfb.
 - A site security challenge still needs manual completion through `npm run login`.
@@ -297,6 +301,34 @@ curl http://127.0.0.1:4153/v1/chat/completions \
 ```
 
 For image input, declare the OpenCode model with `"input": ["text", "image"]`. OpenCode then sends local image attachments as OpenAI-compatible `image_url` data URLs. The proxy decodes and uploads them through ChatGPT's authenticated attachment input; base64 bytes are represented by a short marker in the text prompt rather than pasted into the composer.
+
+## OpenCode lifecycle and arbitrary-file integration
+
+The repository includes a server plugin in `opencode-plugin/`. `scripts/deploy-systemd.sh` installs it into:
+
+```text
+~opencode/.config/opencode/plugins/chatgpt-web-session-proxy/
+```
+
+The plugin runs as the existing unprivileged `opencode` user. It does not receive sudo access or the OpenCode server password. It communicates only with the proxy on `127.0.0.1:4153`.
+
+The plugin performs three integrations:
+
+- `session.archived` archives the ChatGPT conversation already mapped to that OpenCode session;
+- `session.unarchived` restores that same ChatGPT conversation;
+- `session.deleted` deletes the mapped ChatGPT conversation and then removes the proxy's persisted mapping;
+- non-image prompt files are staged in memory for the next primary request and uploaded through ChatGPT's normal `Attach files` input.
+
+Lifecycle actions are serialized with ordinary ChatGPT turns. No undocumented ChatGPT backend endpoint is called. If an OpenCode session never created a ChatGPT conversation, its lifecycle event is a successful no-op.
+
+To install or refresh only the plugin:
+
+```bash
+sudo bash scripts/install-opencode-plugin.sh
+sudo systemctl restart opencode.service
+```
+
+The proxy keeps staged file bytes only in memory. They are consumed once by the next primary request, restored after a transient browser failure, discarded on session reset/deletion, and never written into the proxy session-state JSON.
 
 ```json
 "capabilities": {

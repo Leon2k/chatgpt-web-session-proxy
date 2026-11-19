@@ -3,7 +3,17 @@ export type ImageUrlContentPart = {
   type: "image_url" | "input_image";
   image_url: string | { url: string; detail?: "auto" | "low" | "high" };
 };
-export type ChatContentPart = TextContentPart | ImageUrlContentPart;
+export type FileContentPart = {
+  type: "file" | "input_file";
+  file?: { filename?: string; file_data?: string };
+  filename?: string;
+  file_data?: string;
+};
+export type VideoUrlContentPart = {
+  type: "video_url" | "input_video";
+  video_url: string | { url: string };
+};
+export type ChatContentPart = TextContentPart | ImageUrlContentPart | FileContentPart | VideoUrlContentPart;
 
 export type ToolCall = {
   id: string;
@@ -52,8 +62,10 @@ export type BrowserResponseUpdate = {
 
 export type BrowserResponseUpdateHandler = (update: BrowserResponseUpdate) => void | Promise<void>;
 
-export type ImageAttachment = {
+export type FileAttachment = {
   name: string;
   mimeType: string;
   buffer: Buffer;
 };
+
+export type ImageAttachment = FileAttachment;

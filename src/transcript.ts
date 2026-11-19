@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { fileParts, fileReferenceHashes } from "./attachments.js";
 import { imageParts, imageReferenceHashes } from "./images.js";
 import { renderToolInstructions } from "./tool-protocol.js";
 import type { ChatMessage, TextContentPart, ToolDefinition } from "./types.js";
@@ -25,6 +26,7 @@ function normalizedMessage(message: ChatMessage): unknown {
     role: message.role,
     content: volatileInstruction ? null : contentToText(message.content),
     images: volatileInstruction ? [] : imageReferenceHashes(message.content),
+    files: volatileInstruction ? [] : fileReferenceHashes(message.content),
     name: message.name ?? null,
     tool_call_id: message.tool_call_id ?? null,
     tool_calls: message.tool_calls?.map((call) => ({ id: call.id, type: call.type, function: call.function })) ?? null,
@@ -51,12 +53,19 @@ export function changedInstructionMessages(previous: ChatMessage[], current: Cha
 
 function renderMessage(message: ChatMessage): string {
   const attachments = imageParts(message.content);
+  const files = fileParts(message.content);
   const content = [
     contentToText(message.content),
     ...attachments.map((part, index) => {
       const url = typeof part.image_url === "string" ? part.image_url : part.image_url.url;
       const mime = /^data:([^;,]+)/i.exec(url)?.[1] ?? "image";
       return `[Attached image ${index + 1}: ${mime}]`;
+    }),
+    ...files.map((part, index) => {
+      if (part.type === "file" || part.type === "input_file") {
+        return `[Attached file ${index + 1}: ${part.file?.filename ?? part.filename ?? "unnamed"}]`;
+      }
+      return `[Attached video ${index + 1}]`;
     }),
   ].filter(Boolean).join("\n");
   if (message.role === "tool") {
