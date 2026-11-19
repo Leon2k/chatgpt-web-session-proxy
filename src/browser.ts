@@ -366,8 +366,8 @@ export class BrowserBackend {
     const item = page.getByRole("menuitem", { name: "Delete", exact: true }).last();
     await item.waitFor({ state: "visible", timeout: 10_000 });
     await item.click();
-    const dialog = page.getByRole("dialog");
-    const confirm = dialog.getByRole("button", { name: "Delete", exact: true }).last();
+    const dialog = page.getByRole("dialog").filter({ hasText: "Delete chat?" }).last();
+    const confirm = dialog.getByRole("button", { name: /^Delete(?: chat)?$/ }).last();
     await confirm.waitFor({ state: "visible", timeout: 10_000 });
     await confirm.click();
     await page.waitForTimeout(700);

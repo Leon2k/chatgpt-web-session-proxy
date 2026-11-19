@@ -58,9 +58,11 @@ async function resolveFile(file: PendingFile): Promise<EncodedFile> {
 }
 
 async function proxyRequest(pathname: string, init: RequestInit): Promise<void> {
+  const headers = new Headers(init.headers);
+  if (init.body !== undefined && !headers.has("content-type")) headers.set("content-type", "application/json");
   const response = await fetch(`${PROXY_URL}${pathname}`, {
     ...init,
-    headers: { "content-type": "application/json", ...(init.headers ?? {}) },
+    headers,
   });
   if (!response.ok) throw new Error(`ChatGPT proxy ${init.method ?? "GET"} ${pathname} returned HTTP ${response.status}: ${await response.text()}`);
 }
