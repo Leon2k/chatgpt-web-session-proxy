@@ -245,7 +245,10 @@ Authentication stays inside the Chrome profile; the proxy does not ask for or pe
 - `GET /v1/models`
 - automatic Pi session-affinity IDs, with optional `X-ChatGPT-Session` override
 - atomic session creation for concurrent OpenCode completion/metadata requests
+- local handling of parallel metadata/title requests so they do not create duplicate ChatGPT chats
+- one active ChatGPT Web request globally to reduce rate-limit pressure on the account
 - one ChatGPT conversation per local session
+- OpenCode compaction stays in that same ChatGPT conversation instead of rotating to a new web chat
 - persisted conversation URL + append-only shadow transcript
 - prompt-emulated tool calls translated to OpenAI `tool_calls`
 - automatic first-turn local project snapshot through Pi's `bash` tool
@@ -262,7 +265,7 @@ Authentication stays inside the Chrome profile; the proxy does not ask for or pe
 - Tool-call responses remain buffered until protocol v3 is parsed, preventing partial `PI_TOOL_CALL` markers or arguments from leaking as assistant text.
 - Tool calls are prompt-emulated, not ChatGPT Web's internal tool system.
 - Image input accepts base64 PNG, JPEG, WebP, GIF, and AVIF data URLs only, up to 8 MiB each and 10 images per turn. External URLs, SVG, and non-image files are not fetched or forwarded.
-- Completed browser-local `blob:` response images are converted to portable `data:image/...` Markdown (up to 16 MiB each); normal HTTPS and data-image sources are retained.
+- Completed browser-local generated images are resized to at most 384 px and encoded as WebP before portable `data:image/...` Markdown is returned; this keeps chat rendering and context size bounded. Normal HTTPS and data-image sources are retained.
 - Windows/macOS `hidden` mode hides native Chrome; it is not a separate virtual display server like Xvfb.
 - A site security challenge still needs manual completion through `npm run login`.
 

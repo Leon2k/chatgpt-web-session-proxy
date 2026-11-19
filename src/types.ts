@@ -45,6 +45,9 @@ export type AssistantTurn = {
 export type BrowserResponseUpdate = {
   text: string;
   markdown: string;
+  progress?: {
+    percent: number;
+  };
 };
 
 export type BrowserResponseUpdateHandler = (update: BrowserResponseUpdate) => void | Promise<void>;

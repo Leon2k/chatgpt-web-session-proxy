@@ -29,6 +29,7 @@ export class OpenAICompletionStream {
   private readonly incremental: IncrementalMarkdown;
   private started = false;
   private ended = false;
+  private lastProgress = -1;
 
   constructor(
     private readonly reply: FastifyReply,
@@ -68,6 +69,17 @@ export class OpenAICompletionStream {
   }
 
   update(update: BrowserResponseUpdate): void {
+    if (update.progress && (this.lastProgress < 0 || update.progress.percent >= this.lastProgress + 5 || update.progress.percent === 100)) {
+      this.lastProgress = update.progress.percent;
+      this.begin();
+      this.send({
+        choices: [{
+          index: 0,
+          delta: { reasoning_content: `Генерация изображения: ${update.progress.percent}%\n` },
+          finish_reason: null,
+        }],
+      });
+    }
     const content = this.incremental.update(update.text, update.markdown);
     if (!content) return;
     this.begin();

@@ -327,11 +327,27 @@ export class BrowserBackend {
               const response = await fetch(image.src);
               const blob = await response.blob();
               if (!response.ok || !blob.type.startsWith("image/") || blob.size > 16 * 1024 * 1024) return;
+              let portableBlob = blob;
+              if (image.closest('[data-testid="generated-image-preview"]')) {
+                try {
+                  const bitmap = await createImageBitmap(blob);
+                  const scale = Math.min(1, 384 / Math.max(bitmap.width, bitmap.height));
+                  const canvas = document.createElement("canvas");
+                  canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+                  canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+                  canvas.getContext("2d")?.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+                  const resized = await new Promise<Blob | null>(resolve => canvas.toBlob(resolve, "image/webp", 0.78));
+                  bitmap.close();
+                  if (resized) portableBlob = resized;
+                } catch {
+                  // Fall back to the original generated image.
+                }
+              }
               const dataUrl = await new Promise<string>((resolve, reject) => {
                 const reader = new FileReader();
                 reader.onload = () => resolve(String(reader.result));
                 reader.onerror = () => reject(reader.error);
-                reader.readAsDataURL(blob);
+                reader.readAsDataURL(portableBlob);
               });
               clonedImages[imageIndex]?.setAttribute("src", dataUrl);
             } catch {
@@ -377,8 +393,29 @@ export class BrowserBackend {
     let lastId = "";
     let lastMarkdown = "";
     let stableSince = Date.now();
+    let lastProgress = -1;
 
     while (Date.now() < deadline) {
+      if (onUpdate) {
+        const progress = await page.locator("body").evaluate(() => {
+          const roots = [...document.querySelectorAll('[data-talvt-turn-state]:not([data-talvt-turn-state="complete"])')];
+          for (const root of roots.reverse()) {
+            const elements = [...root.querySelectorAll("*")].reverse();
+            for (const element of elements) {
+              if (element.children.length) continue;
+              const match = (element.textContent ?? "").trim().match(/^(\d{1,3})\s*%$/);
+              const percent = match ? Number.parseInt(match[1], 10) : -1;
+              if (percent >= 0 && percent <= 100) return percent;
+            }
+          }
+          return -1;
+        }).catch(() => -1);
+        if (progress >= 0 && progress !== lastProgress) {
+          lastProgress = progress;
+          await onUpdate({ text: "", markdown: "", progress: { percent: progress } });
+        }
+      }
+
       const responses = await this.assistantResponses(page);
       const current = selectNewAssistantResponse(responses, before);
 

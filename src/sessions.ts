@@ -8,7 +8,7 @@ import { parseAssistantTurn } from "./tool-protocol.js";
 import { buildProjectBootstrapTurn } from "./project-bootstrap.js";
 import { compactionTurn, hasConversationCheckpoint, isCompactionRequest, prepareCompactionMessages } from "./compaction.js";
 import { extractImageAttachments } from "./images.js";
-import { buildDeltaPrompt, buildInitialPrompt, changedInstructionMessages, commonPrefixLength } from "./transcript.js";
+import { buildDeltaPrompt, buildInitialPrompt, changedInstructionMessages, commonPrefixLength, contentToText } from "./transcript.js";
 import type { AssistantTurn, BrowserResponseUpdateHandler, ChatMessage, ToolDefinition } from "./types.js";
 
 class SerialQueue {
@@ -56,6 +56,7 @@ export function validChatGptConversationUrl(url: string | undefined): string | u
 export class SessionManager {
   private sessions = new Map<string, Session>();
   private pendingSessions = new Map<string, Promise<Session>>();
+  private browserQueue = new SerialQueue();
   private cleanupTimer?: NodeJS.Timeout;
   constructor(private readonly browser: BrowserBackend) {}
 
@@ -208,35 +209,22 @@ export class SessionManager {
     return session;
   }
 
-  private async completeCompaction(messages: ChatMessage[]): Promise<AssistantTurn> {
-    const page = await this.browser.newConversationPage();
-    try {
-      const prompt = buildInitialPrompt(prepareCompactionMessages(messages), []);
-      // A checkpoint may legitimately quote tool-protocol markers from the
-      // retained transcript. Compaction never offers tools, so treat its web
-      // response as summary text instead of feeding it through the tool parser.
-      // Do not stream service-only compaction: ChatGPT may revise earlier
-      // Markdown while composing the checkpoint, which is not append-only.
-      const content = await this.browser.sendPrompt(page, prompt);
-      return compactionTurn(content);
-    } finally {
-      await page.close().catch(() => undefined);
-    }
+  private async completeCompaction(page: Page, messages: ChatMessage[]): Promise<AssistantTurn> {
+    const prompt = buildInitialPrompt(prepareCompactionMessages(messages), []);
+    // Keep compaction in the session's existing ChatGPT conversation. A
+    // checkpoint may quote tool markers, so treat the response as summary text
+    // and do not stream it through the ordinary tool-aware response path.
+    const content = await this.browserQueue.run(() => this.browser.sendPrompt(page, prompt));
+    return compactionTurn(content);
   }
 
-  private async completeIsolated(
-    messages: ChatMessage[],
-    tools: ToolDefinition[],
-    onUpdate?: BrowserResponseUpdateHandler,
-  ): Promise<AssistantTurn> {
-    const page = await this.browser.newConversationPage();
-    try {
-      const images = extractImageAttachments(messages);
-      const content = await this.browser.sendPrompt(page, buildInitialPrompt(messages, tools), onUpdate, images);
-      return parseAssistantTurn(content, tools);
-    } finally {
-      await page.close().catch(() => undefined);
-    }
+  private localAuxiliaryTurn(messages: ChatMessage[]): AssistantTurn {
+    const candidate = messages
+      .filter(message => message.role === "user")
+      .map(message => contentToText(message.content).replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim())
+      .find(text => text && !/\b(?:title|summary|summarize)\b/i.test(text));
+    const content = candidate ? candidate.slice(0, 72) : "Сессия OpenCode";
+    return { content, rawText: content, toolCalls: [], finishReason: "stop" };
   }
 
   async complete(
@@ -247,6 +235,9 @@ export class SessionManager {
   ): Promise<AssistantTurn> {
     const session = await this.getOrCreate(id);
     const queuedBehindAnother = session.queue.busy;
+    if (queuedBehindAnother && tools.length === 0 && !isCompactionRequest(messages)) {
+      return this.localAuxiliaryTurn(messages);
+    }
     return session.queue.run(async () => {
       session.touchedAt = Date.now();
 
@@ -254,17 +245,10 @@ export class SessionManager {
       // asks the provider for a summary. Run that one request in an isolated
       // ChatGPT conversation so it cannot diverge or mutate the live session.
       if (isCompactionRequest(messages)) {
-        return this.completeCompaction(messages);
-      }
-
-      // OpenCode launches auxiliary no-tool requests (for example chat-title
-      // generation) with the same affinity ID as the main completion. If one
-      // waited behind the main request and has a different transcript, handle
-      // it in its own disposable web conversation instead of returning 409 or
-      // allowing it to mutate the main session.
-      if (queuedBehindAnother && tools.length === 0 && session.shadow.length &&
-          commonPrefixLength(session.shadow, messages) !== session.shadow.length) {
-        return this.completeIsolated(messages, tools, onUpdate);
+        const turn = await this.completeCompaction(session.page, messages);
+        session.conversationUrl = this.validConversationUrl(session.page.url()) ?? session.conversationUrl;
+        await this.persist(session);
+        return turn;
       }
 
       // On the first turn of a brand-new session, deterministically ask Pi to
@@ -313,16 +297,12 @@ export class SessionManager {
             throw new SessionDivergedError(`Session ${id} diverged at message ${prefix}. Reset it or start a new Pi session (or use a new explicit X-ChatGPT-Session value).`);
           }
 
-          // A successful OpenCode compaction replaces the old transcript with
-          // a checkpoint. Rotate the web conversation and seed the new one
-          // from that checkpoint rather than weakening normal divergence checks.
-          const oldPage = session.page;
-          session.page = await this.browser.newConversationPage();
-          await oldPage.close().catch(() => undefined);
+          // OpenCode replaced its local transcript with a checkpoint. Keep the
+          // same ChatGPT conversation and append that checkpoint plus the new
+          // request, preserving a one-to-one OpenCode/Web-chat mapping.
           session.shadow = [];
-          session.conversationUrl = undefined;
           session.bootstrapPending = false;
-          prompt = buildInitialPrompt(messages, tools);
+          prompt = buildDeltaPrompt(messages, tools);
           forwardedMessages = messages;
         } else {
           const delta = messages.slice(prefix);
@@ -334,7 +314,9 @@ export class SessionManager {
       }
 
       const images = extractImageAttachments(forwardedMessages);
-      const turn = parseAssistantTurn(await this.browser.sendPrompt(session.page, prompt, onUpdate, images), tools);
+      const turn = parseAssistantTurn(await this.browserQueue.run(() =>
+        this.browser.sendPrompt(session.page, prompt, onUpdate, images)
+      ), tools);
       session.bootstrapPending = false;
       session.shadow = [...messages, { role: "assistant", content: turn.content, ...(turn.toolCalls.length ? { tool_calls: turn.toolCalls } : {}) }];
       session.conversationUrl = this.validConversationUrl(session.page.url()) ?? session.conversationUrl;
